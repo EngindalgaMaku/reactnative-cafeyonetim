@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "cafeapp2",
+    "slug": "cafeapp2",
+    "version": "1.0.0",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "android": {
+      "package": "com.anonymous.cafeapp2"
+    },
+    "metro": {
+      "resolver": {
+        "sourceExts": ["js", "jsx", "ts", "tsx", "json"],
+        "extraNodeModules": {
+          "web-streams-polyfill/ponyfill/es6": ["node_modules/web-streams-polyfill/ponyfill/es6"]
+        }
+      }
+    }
+  }
+}
