@@ -41,6 +41,11 @@ const BranchesScreen = () => {
     phone: ''
   });
 
+  // State for delete confirmation modal
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
+  const [branchToDelete, setBranchToDelete] = useState(null);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
+
   const flatListRef = useRef(null);
 
   // Şubeleri getir
@@ -118,7 +123,7 @@ const BranchesScreen = () => {
       id: item.id,
       name: item.name || '',
       address: item.address || '',
-      phone: item.phone || ''
+      phone: item.phone_number || ''
     });
     setFormMode('edit');
     setModalVisible(true);
@@ -138,7 +143,7 @@ const BranchesScreen = () => {
       const branchData = {
         name: formData.name.trim(),
         address: formData.address.trim(),
-        phone: formData.phone.trim()
+        phone_number: formData.phone.trim()
       };
 
       if (formMode === 'add') {
@@ -174,64 +179,68 @@ const BranchesScreen = () => {
     }
   };
 
-  // Şube sil
+  // Şube sil (deletion process starts here)
   const handleDeleteBranch = (item) => {
-    Alert.alert(
-      'Silme Onayı',
-      `"${item.name}" şubesini silmek istediğinizden emin misiniz?`,
-      [
-        { text: 'İptal', style: 'cancel' },
-        { 
-          text: 'Sil', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setLoading(true);
-              
-              // İlişkili verileri kontrol et
-              const { count: inventoryCount, error: inventoryError } = await supabase
-                .from('inventory')
-                .select('id', { count: 'exact', head: true })
-                .eq('branch_id', item.id);
-                
-              if (inventoryError) throw inventoryError;
-              
-              const { count: salesCount, error: salesError } = await supabase
-                .from('sales')
-                .select('id', { count: 'exact', head: true })
-                .eq('branch_id', item.id);
-                
-              if (salesError) throw salesError;
-              
-              if (inventoryCount > 0 || salesCount > 0) {
-                Alert.alert(
-                  'Şube Silinemez',
-                  'Bu şubeye ait satış veya stok kayıtları bulunduğu için silinemez. Önce ilgili kayıtları silmelisiniz.'
-                );
-                return;
-              }
-              
-              // Şubeyi sil
-              const { error } = await supabase
-                .from('branches')
-                .delete()
-                .eq('id', item.id);
-                
-              if (error) throw error;
-              
-              fetchBranches();
-              Alert.alert('Başarılı', 'Şube başarıyla silindi.');
-              
-            } catch (error) {
-              console.error('Şube silinirken hata:', error);
-              Alert.alert('Hata', 'Şube silinirken bir sorun oluştu.');
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-      ]
-    );
+    setBranchToDelete(item); // Store the item to be deleted
+    setDeleteConfirmInput(''); // Reset confirmation input
+    setShowDeleteConfirmModal(true); // Show the custom confirmation modal
+  };
+
+  // Şubeyi gerçekten sil (actual deletion logic)
+  const executeDeleteBranch = async () => {
+    if (!branchToDelete || deleteConfirmInput !== branchToDelete.name) {
+      Alert.alert('Hata', 'Silme işlemi için girilen şube adı yanlış.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      
+      // İlişkili verileri kontrol et
+      const { count: inventoryCount, error: inventoryError } = await supabase
+        .from('inventory')
+        .select('id', { count: 'exact', head: true })
+        .eq('branch_id', branchToDelete.id);
+        
+      if (inventoryError) throw inventoryError;
+      
+      const { count: salesCount, error: salesError } = await supabase
+        .from('sales')
+        .select('id', { count: 'exact', head: true })
+        .eq('branch_id', branchToDelete.id);
+        
+      if (salesError) throw salesError;
+      
+      if (inventoryCount > 0 || salesCount > 0) {
+        Alert.alert(
+          'Şube Silinemez',
+          'Bu şubeye ait satış veya stok kayıtları bulunduğu için silinemez. Önce ilgili kayıtları silmelisiniz.'
+        );
+        setShowDeleteConfirmModal(false); // Hide modal on failure
+        setBranchToDelete(null);
+        return;
+      }
+      
+      // Şubeyi sil
+      const { error } = await supabase
+        .from('branches')
+        .delete()
+        .eq('id', branchToDelete.id);
+        
+      if (error) throw error;
+      
+      fetchBranches(); // Refresh list
+      Alert.alert('Başarılı', 'Şube başarıyla silindi.');
+      
+    } catch (error) {
+      console.error('Şube silinirken hata:', error);
+      Alert.alert('Hata', 'Şube silinirken bir sorun oluştu.');
+    } finally {
+      setLoading(false);
+      setShowDeleteConfirmModal(false);
+      setBranchToDelete(null);
+      setDeleteConfirmInput('');
+    }
   };
 
   // Sayfalama fonksiyonları
@@ -258,11 +267,13 @@ const BranchesScreen = () => {
       <View style={styles.tableCell}>
         <Text style={styles.cellText}>{item.name}</Text>
       </View>
+      {/* Kaldırılan adres bölümü 
       <View style={[styles.tableCell, { flex: 1.5 }]}>
         <Text style={styles.cellText}>{item.address || '-'}</Text>
       </View>
+      */}
       <View style={[styles.tableCell, { flex: 1 }]}>
-        <Text style={styles.cellText}>{item.phone || '-'}</Text>
+        <Text style={styles.cellText}>{item.phone_number || '-'}</Text>
       </View>
       <View style={[styles.tableCell, { flex: 0.6, justifyContent: 'center' }]}>
         <View style={styles.actionButtons}>
@@ -290,9 +301,11 @@ const BranchesScreen = () => {
       <View style={styles.tableHeaderCell}>
         <Text style={styles.tableHeaderText}>Şube Adı</Text>
       </View>
+      {/* Kaldırılan adres başlığı
       <View style={[styles.tableHeaderCell, { flex: 1.5 }]}>
         <Text style={styles.tableHeaderText}>Adres</Text>
       </View>
+      */}
       <View style={[styles.tableHeaderCell, { flex: 1 }]}>
         <Text style={styles.tableHeaderText}>Telefon</Text>
       </View>
@@ -460,7 +473,7 @@ const BranchesScreen = () => {
           </View>
           
           {/* Sayfalama Kontrolleri */}
-          {branches.length > 0 && renderPaginationControls()}
+          {totalPages > 1 && renderPaginationControls()}
         </>
       )}
 
@@ -537,6 +550,63 @@ const BranchesScreen = () => {
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
                   <Text style={styles.saveButtonText}>Kaydet</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={showDeleteConfirmModal}
+        onRequestClose={() => {
+          setShowDeleteConfirmModal(false);
+          setBranchToDelete(null);
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.deleteConfirmContainer}
+        >
+          <View style={styles.deleteConfirmContent}>
+            <Text style={styles.deleteConfirmTitle}>Şube Silme Onayı</Text>
+            <Text style={styles.deleteConfirmText}>
+              Lütfen silmek istediğiniz "<Text style={{fontWeight: 'bold'}}>{branchToDelete?.name}</Text>" şubesinin adını aşağıya birebir aynı şekilde yazarak onaylayın.
+            </Text>
+            <TextInput
+              style={styles.deleteConfirmInput}
+              placeholder="Şube adını buraya girin"
+              value={deleteConfirmInput}
+              onChangeText={(text) => setDeleteConfirmInput(text)}
+              autoCapitalize="none"
+            />
+            <View style={styles.deleteConfirmActions}>
+              <TouchableOpacity
+                style={[styles.deleteConfirmButton, styles.cancelButton]}
+                onPress={() => {
+                  setShowDeleteConfirmModal(false);
+                  setBranchToDelete(null);
+                  setDeleteConfirmInput('');
+                }}
+              >
+                <Text style={styles.cancelButtonText}>İptal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.deleteConfirmButton, 
+                  styles.deleteButton,
+                  (deleteConfirmInput !== branchToDelete?.name || loading) && styles.disabledButton
+                ]}
+                onPress={executeDeleteBranch}
+                disabled={deleteConfirmInput !== branchToDelete?.name || loading}
+              >
+                {loading && branchToDelete && deleteConfirmInput === branchToDelete.name ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.deleteButtonText}>Sil</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -824,6 +894,61 @@ const styles = StyleSheet.create({
   },
   activePageSizeButtonText: {
     color: '#1e3a8a',
+    fontWeight: 'bold',
+  },
+  deleteConfirmContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  deleteConfirmContent: {
+    width: Platform.OS === 'web' ? '60%' : '90%',
+    maxWidth: 500,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 20,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  deleteConfirmTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 20,
+    textAlign: 'center',
+    color: '#333',
+  },
+  deleteConfirmText: {
+    marginBottom: 20,
+    color: '#333',
+    textAlign: 'center',
+  },
+  deleteConfirmInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 20,
+  },
+  deleteConfirmActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  deleteConfirmButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 5,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 100,
+  },
+  deleteButtonText: {
+    color: '#fff',
     fontWeight: 'bold',
   },
 });

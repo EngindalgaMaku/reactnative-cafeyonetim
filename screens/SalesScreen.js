@@ -26,30 +26,37 @@ const SalesScreen = ({ branchId }) => {
   const [sales, setSales] = useState([]);
   const [filteredSales, setFilteredSales] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [searchText, setSearchText] = useState('');
-  const [selectedDateRange, setSelectedDateRange] = useState('Tümü');
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [selectedSale, setSelectedSale] = useState(null);
   const [sortOrder, setSortOrder] = useState('desc');
   const [saleDetails, setSaleDetails] = useState([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editableSaleData, setEditableSaleData] = useState(null);
+  const [grandTotalAmount, setGrandTotalAmount] = useState(0);
+  const [productSelectionModalVisible, setProductSelectionModalVisible] = useState(false);
+  const [allProductsForSelection, setAllProductsForSelection] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
   
   // Sayfalama için state'ler
   const [currentPage, setCurrentPage] = useState(0);
   const [pageSize] = useState(10); // Sabit değer 10
   const [totalCount, setTotalCount] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
+  // const [totalPages, setTotalPages] = useState(0); // totalPages might not be strictly needed for UI if not displayed
 
   // FlatList referansı
   const flatListRef = React.useRef();
 
-  // Tarih aralığı seçenekleri (web görünümü ile aynı)
-  const dateRanges = ['Tümü', 'Son 24 Saat', 'Son 7 Gün', 'Son 30 Gün'];
-
   // İlk yükleme
   useEffect(() => {
-    fetchSales();
-  }, [branchId, selectedDateRange, sortOrder, currentPage, pageSize]);
+    setCurrentPage(0);
+    setSales([]);
+    setFilteredSales([]);
+    setGrandTotalAmount(0);
+    fetchSales(0, true);
+  }, [branchId, sortOrder]);
 
   // Arama metni değiştiğinde filtreleme
   useEffect(() => {
@@ -57,37 +64,66 @@ const SalesScreen = ({ branchId }) => {
   }, [searchText, sales]);
 
   // Satışları veritabanından getir
-  const fetchSales = async () => {
+  const fetchSales = async (pageToFetch, isNewQuery = false) => {
+    if (loadingMore && !isNewQuery) return;
+
+    if (isNewQuery) {
     setLoading(true);
+      setSales([]);
+      setFilteredSales([]);
+      setGrandTotalAmount(0);
+    } else {
+      setLoadingMore(true);
+    }
+    
     try {
-      // Tarih aralığı için filtre oluştur
-      const dateFilter = getDateFilter(selectedDateRange);
+      // const todayFilter = getTodayDateFilter(); // <<-- GÜNLÜK FİLTRE KALDIRILDI
       
-      // Önce toplam sayıyı çekelim
-      let countQuery = supabase
+      // Önce toplam sayıyı ve toplam tutarı çekelim
+      
+      // Toplam adet sorgusu (Yeniden yapılandırıldı)
+      let countPipeline = supabase
         .from('sales')
         .select('*', { count: 'exact', head: true });
       
-      // Şube filtresi ekle
       if (branchId) {
-        countQuery = countQuery.eq('branch_id', branchId);
+        countPipeline = countPipeline.eq('branch_id', branchId);
       }
+      // Bugün filtresi kaldırıldı
+      // countPipeline = countPipeline.gte('sale_time', todayFilter.startDate.toISOString());
+      // countPipeline = countPipeline.lte('sale_time', todayFilter.endDate.toISOString());
       
-      // Tarih filtresi ekle - created_at yerine sale_time kullan
-      if (dateFilter.startDate) {
-        countQuery = countQuery.gte('sale_time', dateFilter.startDate.toISOString());
-      }
-      if (dateFilter.endDate) {
-        countQuery = countQuery.lte('sale_time', dateFilter.endDate.toISOString());
-      }
-      
-      const { count, error: countError } = await countQuery;
+      const { count, error: countError } = await countPipeline;
       
       if (countError) {
         console.error("Toplam sayı sorgusu hatası:", countError);
       } else {
         setTotalCount(count || 0);
-        setTotalPages(Math.ceil((count || 0) / pageSize));
+      }
+
+      // Toplam tutar sorgusu
+      // Supabase doğrudan SUM gibi aggregations için RPC veya view önerebilir,
+      // ama client-side'da bu şekilde de yapılabilir (çok büyük veri setleri için ideal değil)
+      // Daha iyi bir yol, .rpc() ile bir database fonksiyonu çağırmak olabilir.
+      // Şimdilik, tüm filtrelenmiş satışların toplamını almak için ayrı bir sorgu yapıyoruz.
+      // Bu, eğer çok fazla satış varsa performansı etkileyebilir.
+      // Not: Bu tüm filtrelenmiş kayıtların toplamını alır, sadece o anki sayfanın değil.
+
+      let sumQuery = supabase.from('sales').select('total_amount');
+      if (branchId) {
+        sumQuery = sumQuery.eq('branch_id', branchId);
+      }
+      // Bugün filtresi kaldırıldı
+      // sumQuery = sumQuery.gte('sale_time', todayFilter.startDate.toISOString());
+      // sumQuery = sumQuery.lte('sale_time', todayFilter.endDate.toISOString());
+
+      const { data: sumData, error: sumError } = await sumQuery;
+
+      if (sumError) {
+        console.error("Toplam tutar sorgusu hatası:", sumError);
+      } else if (sumData) {
+        const totalSum = sumData.reduce((acc, sale) => acc + (sale.total_amount || 0), 0);
+        setGrandTotalAmount(totalSum);
       }
       
       // Şimdi bu sayfadaki verileri çekelim
@@ -95,24 +131,19 @@ const SalesScreen = ({ branchId }) => {
         .from('sales')
         .select('*');
       
-      // Şube filtresi ekle
       if (branchId) {
         query = query.eq('branch_id', branchId);
       }
       
-      // Tarih filtresi ekle - created_at yerine sale_time kullan
-      if (dateFilter.startDate) {
-        query = query.gte('sale_time', dateFilter.startDate.toISOString());
-      }
-      if (dateFilter.endDate) {
-        query = query.lte('sale_time', dateFilter.endDate.toISOString());
-      }
+      // Bugün filtresi kaldırıldı
+      // query = query.gte('sale_time', todayFilter.startDate.toISOString());
+      // query = query.lte('sale_time', todayFilter.endDate.toISOString());
       
       // Sıralama - created_at yerine sale_time kullan
       query = query.order('sale_time', { ascending: sortOrder === 'asc' });
       
       // Sayfalama uygula
-      const from = currentPage * pageSize;
+      const from = pageToFetch * pageSize;
       const to = from + pageSize - 1;
       query = query.range(from, to);
       
@@ -164,6 +195,28 @@ const SalesScreen = ({ branchId }) => {
             console.log("Ödeme yöntemi bilgileri alınırken hata:", err);
           }
           
+          // Kasiyer adını user_id kullanarak profiles tablosundan çek
+          let cashierName = 'Sistem'; // Default value
+          try {
+            if (sale.user_id) { // Check if user_id exists on the sale object
+              const { data: profileData, error: profileError } = await supabase
+                .from('profiles') // Assuming your user profiles table is named 'profiles'
+                .select('full_name') // Assuming the display name column is 'full_name'
+                .eq('id', sale.user_id) // Match profile id with sale.user_id
+                .single();
+
+              if (profileError) {
+                console.log("Kasiyer profil bilgisi alınırken hata:", profileError.message);
+              } else if (profileData && profileData.full_name) {
+                cashierName = profileData.full_name;
+              } else {
+                console.log(`Kasiyer adı bulunamadı user_id: ${sale.user_id}`);
+              }
+            }
+          } catch (err) {
+            console.log("Kasiyer adı çekilirken genel hata:", err);
+          }
+          
           return {
             id: sale.id,
             orderNumber: `Satış ID: ${sale.id.toString().substring(0, 8)}`,
@@ -174,7 +227,7 @@ const SalesScreen = ({ branchId }) => {
             status: sale.status || 'completed',
             branchId: sale.branch_id,
             branchName: branchName,
-            cashier: sale.cashier_name || 'Sistem',
+            cashier: cashierName, // Use the fetched or default cashierName
             products: [] // Ürünler sonradan yüklenecek
           };
         }));
@@ -182,128 +235,89 @@ const SalesScreen = ({ branchId }) => {
         // Her satış için ürün detaylarını ayrı ayrı çekelim
         const salesWithDetails = await Promise.all(
           salesWithoutDetails.map(async (sale) => {
-            // Satış detaylarını al - Önce sale_items tablosunu kontrol et, yoksa mock veri kullan
+            // Satış detaylarını al - Önce sale_items tablosunu kontrol et
             try {
               const { data: saleItems, error: detailsError } = await supabase
                 .from('sale_items')
-                .select('*')
+                .select('*') // Daha spesifik alanlar seçilebilir: 'product_id, quantity, unit_price, products(name)')
                 .eq('sale_id', sale.id);
               
               if (detailsError) {
-                console.log("Detay sorgu hatası:", detailsError);
-                // Mock veri kullan
-                sale.products = [
-                  { id: `${sale.id}-1`, name: 'Örnek Ürün 1', quantity: 2, price: 25, totalPrice: 50 },
-                  { id: `${sale.id}-2`, name: 'Örnek Ürün 2', quantity: 1, price: 35, totalPrice: 35 }
-                ];
-                return sale;
-              }
-                
-              if (saleItems && saleItems.length > 0) {
-                // Her ürün için ismi ayrı bir sorgu ile al
-                sale.products = await Promise.all(saleItems.map(async (item) => {
+                console.error(`Sale ID ${sale.id} için detay sorgu hatası:`, detailsError);
+                sale.products = []; // Hata durumunda boş ürün listesi
+              } else if (saleItems && saleItems.length > 0) {
+                const products = await Promise.all(saleItems.map(async (item) => {
                   let productName = 'Bilinmeyen Ürün';
-                  
-                  try {
+                  let productCategory = 'Kategorisiz';
+                  // Eğer product_id varsa, ürün adını ve kategorisini çek
                     if (item.product_id) {
+                    try {
                       const { data: productData, error: productError } = await supabase
                         .from('products')
-                        .select('name')
+                        .select('name, categories(name)')
                         .eq('id', item.product_id)
                         .single();
-                        
-                      if (!productError && productData) {
+                      if (productError) {
+                        console.error(`Product ID ${item.product_id} için ürün bilgisi alınırken hata:`, productError);
+                      } else if (productData) {
                         productName = productData.name;
+                        productCategory = productData.categories ? productData.categories.name : 'Kategorisiz';
                       }
+                    } catch (e) {
+                      console.error(`Product ID ${item.product_id} için ürün bilgisi çekilirken kritik hata:`, e);
                     }
-                  } catch (err) {
-                    console.log("Ürün bilgileri alınırken hata:", err);
                   }
-                  
                   return {
-                    id: item.id,
+                    id: item.id, // sale_items.id
+                    product_id: item.product_id,
                     name: productName,
-                    quantity: item.quantity || 1,
-                    price: item.price || 0,
-                    totalPrice: (item.price || 0) * (item.quantity || 1)
+                    category: productCategory,
+                    quantity: item.quantity || 0,
+                    price: item.unit_price || 0,
+                    totalPrice: (item.quantity || 0) * (item.unit_price || 0),
                   };
                 }));
+                sale.products = products;
               } else {
-                // Detay bulunamadıysa varsayılan ürünler ekle
-                sale.products = [
-                  { id: `${sale.id}-1`, name: 'Örnek Ürün 1', quantity: 2, price: 25, totalPrice: 50 },
-                  { id: `${sale.id}-2`, name: 'Örnek Ürün 2', quantity: 1, price: 35, totalPrice: 35 }
-                ];
+                // Hiç sale_items yoksa boş ürün listesi
+                console.log(`Sale ID ${sale.id} için ürün detayı bulunamadı, ürünler boş ayarlandı.`);
+                sale.products = [];
               }
-            } catch (error) {
-              console.log('Satış detayları alınırken hata:', error);
-              // Hata durumunda varsayılan ürünler ekle
-              sale.products = [
-                { id: `${sale.id}-1`, name: 'Örnek Ürün 1', quantity: 2, price: 25, totalPrice: 50 },
-                { id: `${sale.id}-2`, name: 'Örnek Ürün 2', quantity: 1, price: 35, totalPrice: 35 }
-              ];
+            } catch (e) {
+              console.error(`Sale ID ${sale.id} için ürün detayları alınırken kritik hata:`, e);
+              sale.products = []; // Kritik hata durumunda da boş ürün listesi
             }
-            
             return sale;
           })
         );
         
+        if (isNewQuery) {
         setSales(salesWithDetails);
+        } else {
+          setSales(prevSales => [...prevSales, ...salesWithDetails]);
+        }
         setFilteredSales(salesWithDetails);
         console.log('Satışlar başarıyla yüklendi:', salesWithDetails.length);
       } else {
-        console.log('Hiç satış verisi bulunamadı, örnek veriler gösteriliyor.');
-        // Hiç veri yoksa örnek veri göster
-        const mockSales = generateMockSales(5);
-        setSales(mockSales);
-        setFilteredSales(mockSales);
-        
-        // Mock verilerle çalışırken sayfalama bilgilerini güncelle
-        setTotalCount(5);
-        setTotalPages(1);
+        console.log('Hiç satış verisi bulunamadı.'); // Mock veri üretimi kaldırıldı
+        if (isNewQuery) { // Sadece yeni sorgu ise sıfırla, loadMore sırasında değil
+            setSales([]);
+            setFilteredSales([]);
+            setGrandTotalAmount(0); // Toplam tutar da sıfırlanmalı
+            setTotalCount(0);
+        }
       }
     } catch (error) {
       console.error('Satışlar yüklenirken hata:', error);
-      // Hata durumunda örnek veriler göster
-      const mockSales = generateMockSales(5);
-      setSales(mockSales);
-      setFilteredSales(mockSales);
-      
-      // Mock verilerle çalışırken sayfalama bilgilerini güncelle
-      setTotalCount(5);
-      setTotalPages(1);
+      if (isNewQuery) { // Hata durumunda da state'leri sıfırla (sadece ilk yüklemede)
+        setSales([]);
+        setFilteredSales([]);
+        setGrandTotalAmount(0);
+        setTotalCount(0);
+      }
     } finally {
       setLoading(false);
-    }
-  };
-
-  // Tarih aralığına göre filtre oluştur
-  const getDateFilter = (range) => {
-    const now = new Date();
-    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-    
-    switch (range) {
-      case 'Son 24 Saat': {
-        const oneDayAgo = new Date(now);
-        oneDayAgo.setHours(now.getHours() - 24);
-        return { startDate: oneDayAgo, endDate: endOfToday };
-      }
-        
-      case 'Son 7 Gün': {
-        const sevenDaysAgo = new Date(now);
-        sevenDaysAgo.setDate(now.getDate() - 7);
-        return { startDate: sevenDaysAgo, endDate: endOfToday };
-      }
-        
-      case 'Son 30 Gün': {
-        const thirtyDaysAgo = new Date(now);
-        thirtyDaysAgo.setDate(now.getDate() - 30);
-        return { startDate: thirtyDaysAgo, endDate: endOfToday };
-      }
-        
-      case 'Tümü':
-      default:
-        return { startDate: null, endDate: null };
+      setLoadingMore(false);
     }
   };
 
@@ -346,8 +360,8 @@ const SalesScreen = ({ branchId }) => {
             id: item.id,
             productName: productName,
             quantity: item.quantity || 1,
-            unitPrice: item.price || 0,
-            totalPrice: (item.price || 0) * (item.quantity || 1)
+            unitPrice: item.price_at_sale || 0,
+            totalPrice: (item.price_at_sale || 0) * (item.quantity || 1)
           };
         }));
         
@@ -367,7 +381,8 @@ const SalesScreen = ({ branchId }) => {
   // Sipariş detaylarını göster
   const showOrderDetails = (order) => {
     setSelectedSale(order);
-    fetchOrderDetails(order.id);
+    setEditableSaleData(JSON.parse(JSON.stringify(order)));
+    setIsEditMode(false);
     setDetailModalVisible(true);
   };
 
@@ -401,7 +416,7 @@ const SalesScreen = ({ branchId }) => {
               
               // Başarılı silme işlemi
               Alert.alert("Başarılı", "Sipariş başarıyla silindi");
-              fetchSales(); // Listeyi yenile
+              fetchSales(currentPage, true); // Listeyi yenile
             } catch (error) {
               console.error('Sipariş silinirken hata:', error);
               Alert.alert("Hata", "Sipariş silinirken bir hata oluştu");
@@ -436,11 +451,6 @@ const SalesScreen = ({ branchId }) => {
     setFilteredSales(filtered);
   };
 
-  // Tarih aralığı değiştir
-  const changeDateRange = (range) => {
-    setSelectedDateRange(range);
-  };
-
   // Sıralama düzenini değiştir
   const toggleSortOrder = () => {
     setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
@@ -448,6 +458,10 @@ const SalesScreen = ({ branchId }) => {
 
   // Para birimi formatı
   const formatCurrency = (value) => {
+    if (typeof value !== 'number') {
+      console.warn('formatCurrency received non-number:', value, 'Returning ₺0,00');
+      return '₺0,00'; 
+    }
     return `₺${value.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
@@ -466,7 +480,9 @@ const SalesScreen = ({ branchId }) => {
 
   // Sadece tarih formatı
   const formatDate = (date) => {
-    return date.toLocaleDateString('tr-TR', { 
+    if (!date) return '';
+    const d = new Date(date); // Gelen date string ise Date objesine çevir
+    return d.toLocaleDateString('tr-TR', { 
       year: 'numeric', 
       month: 'short', 
       day: 'numeric'
@@ -491,6 +507,152 @@ const SalesScreen = ({ branchId }) => {
       case 'cancelled': return 'İptal Edildi';
       default: return 'Bilinmiyor';
     }
+  };
+
+  const calculateTotalAmount = (products) => {
+    if (!products || !Array.isArray(products)) {
+      return 0;
+    }
+    return products.reduce((sum, product) => {
+      const price = product.price_at_sale || product.price || 0;
+      const quantity = product.quantity || 0;
+      return sum + (price * quantity);
+    }, 0);
+  };
+
+  // Ürün bilgilerini düzenleme modunda güncellemek için yardımcı fonksiyon
+  const handleProductPropertyChange = (text, productIndex, propertyName) => {
+    const newProducts = [...editableSaleData.products];
+    const productToUpdate = { ...newProducts[productIndex] };
+
+    let numericValue = parseFloat(text);
+    if (propertyName === 'quantity') {
+      numericValue = parseInt(text, 10);
+    }
+
+    if (isNaN(numericValue)) {
+      // Eğer kullanıcı geçersiz bir sayı girerse (örn: harf) veya boş bırakırsa,
+      // 0 olarak kabul edebilir veya alanı boş bırakmasına izin verebiliriz.
+      // Şimdilik 0 yapalım veya boşsa son geçerli değeri koruyalım.
+      // Eğer boş string ise, belki 0 atamak daha iyi olur.
+      numericValue = 0; 
+    }
+    
+    productToUpdate[propertyName] = numericValue;
+
+    // Fiyat veya miktar değiştiğinde, o ürünün toplam fiyatını da güncelleyebiliriz (eğer varsa)
+    // Ancak genel toplamı zaten calculateTotalAmount hesaplayacak.
+
+    newProducts[productIndex] = productToUpdate;
+    setEditableSaleData(prevData => ({
+      ...prevData,
+      products: newProducts
+    }));
+  };
+
+  const handleDeleteProduct = (productIndex) => {
+    const currentProducts = editableSaleData.products || [];
+    const updatedProducts = currentProducts.filter((_, index) => index !== productIndex);
+    setEditableSaleData(prevData => ({
+      ...prevData,
+      products: updatedProducts
+    }));
+  };
+
+  // Bu fonksiyon artık ürün seçim modalını açacak
+  const openProductSelectionModal = async () => {
+    if (allProductsForSelection.length === 0) { // Ürünler daha önce çekilmediyse çek
+      await fetchProductsForSelection();
+    }
+    setProductSelectionModalVisible(true);
+  };
+
+  const fetchProductsForSelection = async () => {
+    setLoadingProducts(true);
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, name, price, stock_quantity') // İhtiyaç duyulan alanlar
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error("Ürünler çekilirken hata:", error);
+        Alert.alert("Hata", "Ürün listesi yüklenemedi.");
+        setAllProductsForSelection([]);
+      } else {
+        setAllProductsForSelection(data || []);
+      }
+    } catch (err) {
+      console.error("fetchProductsForSelection genel hata:", err);
+      Alert.alert("Hata", "Ürün listesi yüklenirken bir sorun oluştu.");
+      setAllProductsForSelection([]);
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
+
+  // Ürün seçim modalından bir ürün seçildiğinde çağrılacak fonksiyon
+  const handleProductSelected = (product) => {
+    if (!product || !product.id) {
+      Alert.alert("Hata", "Geçersiz ürün seçildi.");
+      return;
+    }
+
+    const newSaleItem = {
+      product_id: product.id,          // Gerçek ürün ID'si
+      name: product.name,              // Seçilen ürünün adı
+      quantity: 1,                     // Varsayılan miktar
+      price_at_sale: product.price,    // Ürünün o anki fiyatı satış fiyatı olarak alınır
+      price: product.price,            // Ana ürün fiyatı (referans için)
+      temp_id: `new-${Date.now()}`     // Yeni eklendiğini belirtmek için geçici ID
+    };
+
+    setEditableSaleData(prevData => ({
+      ...prevData,
+      products: [...(prevData.products || []), newSaleItem]
+    }));
+    setProductSelectionModalVisible(false); // Seçim sonrası modalı kapat
+  };
+
+  // Bu fonksiyon, modal içinde düzenleme modundayken her bir ürün satırını render eder.
+  const renderEditableProductItem = (product, index) => {
+    const itemPrice = product.price_at_sale || product.price || 0;
+    const itemQuantity = product.quantity || 0;
+    // Ürünün kendi ID'si (sale_items tablosundaki ID) veya geçici ID
+    const productKey = product.id || product.temp_id || `product-${index}`;
+
+
+    if (isEditMode) {
+      return (
+        <View key={productKey} style={styles.editableProductItemContainer}>
+          <Text style={styles.editableProductNameFixed}>{product.name || 'Bilinmeyen Ürün'}</Text>
+          <TextInput
+            style={styles.editableNumericInput}
+            value={String(itemQuantity)}
+            onChangeText={(text) => handleProductPropertyChange(text, index, 'quantity')}
+            keyboardType="numeric"
+            selectTextOnFocus
+          />
+          {/* Birim Fiyat - Düzenlenemez */}
+          <Text style={styles.editablePriceTextDisplay}>{formatCurrency(itemPrice)}</Text>
+          
+          <Text style={styles.editableProductTotalPrice}>{formatCurrency(itemPrice * itemQuantity)}</Text>
+          <TouchableOpacity onPress={() => handleDeleteProduct(index)} style={styles.deleteItemButton}>
+            <Ionicons name="remove-circle-outline" size={24} color="#FF6347" />
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    // Görüntüleme modu (isEditMode false ise)
+    return (
+      <View key={productKey} style={styles.editableProductItemContainer}>
+        <Text style={styles.editableProductName}>{product.name || 'Bilinmeyen Ürün'}</Text>
+        <Text style={styles.editableProductQuantity}>{itemQuantity} adet</Text>
+        <Text style={styles.editableProductPrice}>{formatCurrency(itemPrice)}</Text>
+        <Text style={styles.editableProductTotalPrice}>{formatCurrency(itemPrice * itemQuantity)}</Text>
+      </View>
+    );
   };
 
   // Örnek satış verisi oluştur
@@ -555,49 +717,75 @@ const SalesScreen = ({ branchId }) => {
   };
 
   // Sipariş listesi öğesini render et - web görünümüne benzer
-  const renderSaleItem = ({ item }) => (
-    <View style={styles.saleCard}>
-      {/* Üst kısım - Sipariş ID ve Tarih */}
-      <View style={styles.saleCardHeader}>
-        <Text style={styles.orderNumber}>{item.orderNumber} {item.formattedDate}</Text>
+  const renderSaleItem = ({ item, index }) => (
+    <TouchableOpacity onPress={() => showOrderDetails(item)} style={styles.saleItemContainer}>
+      <View style={styles.saleItemHeader}>
+        <Text style={styles.orderNumber}>{item.orderNumber} - {item.branchName}</Text>
+        <Text style={styles.dateText}>{item.formattedDate}</Text>
       </View>
-      
-      {/* Sipariş Özeti */}
-      <View style={styles.saleCardDetails}>
-        <View style={styles.paymentInfo}>
-          <Text style={styles.paymentLabel}>Toplam: {formatCurrency(item.amount)} - Ödeme: {item.paymentMethod}</Text>
+      <View style={styles.saleItemBody}>
+        <View style={styles.saleItemRow}>
+          <Text style={styles.amountLabel}>Toplam Tutar:</Text>
+          <Text style={styles.amountText}>{formatCurrency(item.amount)}</Text>
         </View>
-        <Text style={styles.cashierInfo}>Kasiyer: {item.cashier}</Text>
+        <View style={styles.saleItemRow}>
+          <Text style={styles.infoLabel}>Ödeme:</Text>
+          <Text style={styles.infoValue}>{item.paymentMethod}</Text>
+        </View>
+        <View style={styles.saleItemRow}>
+          <Text style={styles.infoLabel}>Kasiyer:</Text>
+          <Text style={styles.infoValue}>{item.cashier}</Text>
+        </View>
+        <View style={[styles.saleItemRow, styles.statusRow]}>
+          <Text style={styles.infoLabel}>Durum:</Text>
+          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
+            <Text style={styles.statusText}>{getStatusText(item.status)}</Text>
+          </View>
+        </View>
       </View>
       
-      {/* Ürünler Listesi */}
-      <View style={styles.productsList}>
-        <Text style={styles.productsTitle}>Ürünler:</Text>
-        {item.products.map((product, index) => (
-          <View key={product.id} style={styles.productItem}>
-            <Text>• {product.name} - {product.quantity} adet x {formatCurrency(product.price)}</Text>
+      {/* Satılan Ürünler Başlığı */}
+      {item.products && item.products.length > 0 && (
+        <View style={styles.productsSection}>
+          <Text style={styles.productsSectionTitle}>Satılan Ürünler:</Text>
+          {item.products.map((product, pIndex) => (
+            <View key={`${item.id}-product-${pIndex}`} style={styles.productDetailItem}>
+              <Text style={styles.productNameText}>
+                {product.name || 'Bilinmeyen Ürün'}
+              </Text>
+              <Text style={styles.productQuantityText}>
+                {product.quantity} adet
+              </Text>
+              <Text style={styles.productPriceText}>
+                {formatCurrency(product.price_at_sale || product.price || 0)} / adet
+              </Text>
           </View>
         ))}
       </View>
+      )}
       
-      {/* Butonlar */}
-      <View style={styles.saleCardActions}>
+      {/* Silme Butonu - Sağ Üst Köşeye Taşındı */}
         <TouchableOpacity 
-          style={styles.editButton}
-          onPress={() => showOrderDetails(item)}
-        >
-          <Text style={styles.editButtonText}>Düzenle</Text>
+        style={styles.deleteButtonTopRight}
+        onPress={(e) => { 
+          e.stopPropagation(); // Modalın açılmasını engelle
+          deleteSale(item.id); 
+        }}
+      >
+        <Ionicons name="trash-outline" size={22} color="#FF6347" />
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.deleteButton}
-          onPress={() => deleteSale(item.id)}
-        >
-          <Text style={styles.deleteButtonText}>Sil</Text>
         </TouchableOpacity>
-      </View>
+  );
+
+  const renderListFooter = () => {
+    if (!loadingMore) return null;
+    return (
+      <View style={styles.footerLoadingContainer}>
+        <ActivityIndicator size="large" color="#1e3a8a" />
+        <Text style={styles.footerLoadingText}>Daha fazla yükleniyor...</Text>
     </View>
   );
+  };
 
   // Sipariş detayını render et
   const renderOrderDetailItem = ({ item }) => (
@@ -613,16 +801,142 @@ const SalesScreen = ({ branchId }) => {
     </View>
   );
 
-  // Sayfa değiştirme işlevi
-  const handlePageChange = (newPage) => {
-    // Sayfa sınırları içinde kalmasını sağla
-    if (newPage >= 0 && newPage < totalPages) {
-      setCurrentPage(newPage);
-      // Liste başına scroll et
-      if (flatListRef.current) {
-        flatListRef.current.scrollToOffset({ offset: 0, animated: true });
-      }
+  const loadMoreItems = () => {
+    if (loadingMore) return;
+    
+    const nextPage = currentPage + 1;
+    if (nextPage * pageSize < totalCount) {
+      console.log(`Loading more items, page: ${nextPage}`);
+      setCurrentPage(nextPage);
+      fetchSales(nextPage, false);
+    } else {
+      console.log('No more sales to load.');
     }
+  };
+
+  const handleSaveSaleChanges = async () => {
+    if (!editableSaleData || !editableSaleData.id || !selectedSale) {
+      Alert.alert("Hata", "Kaydedilecek veya karşılaştırılacak satış verisi bulunamadı.");
+      return;
+    }
+
+    setLoading(true); // Veya ayrı bir saving state
+
+    const originalProducts = selectedSale.products || [];
+    const editedProducts = editableSaleData.products || [];
+
+    try {
+      // 1. Silinecek ürünleri belirle ve sil (sale_items)
+      const productsToDelete = originalProducts.filter(
+        originalProduct => !editedProducts.find(p => p.id === originalProduct.id)
+      );
+      for (const product of productsToDelete) {
+        if (!product.id) continue; // Orijinal üründe ID olmalı
+        const { error: deleteError } = await supabase
+          .from('sale_items')
+          .delete()
+          .eq('id', product.id);
+        if (deleteError) {
+          throw new Error(`Ürün silinirken hata (${product.name || 'ID: ' + product.id}): ${deleteError.message}`);
+        }
+      }
+
+      // 2. Güncellenecek veya eklenecek ürünleri işle (sale_items)
+      for (const editedProduct of editedProducts) {
+        const originalProduct = originalProducts.find(p => p.id === editedProduct.id);
+
+        if (originalProduct) { // Var olan bir ürün, güncelleme kontrolü
+          if (originalProduct.quantity !== editedProduct.quantity || 
+              (originalProduct.price_at_sale || originalProduct.price) !== (editedProduct.price_at_sale || editedProduct.price)
+             ) { // Miktar VEYA fiyat değiştiyse (fiyat şuan değişmiyor ama geleceğe hazırlık)
+            const { error: updateError } = await supabase
+              .from('sale_items')
+              .update({
+                quantity: editedProduct.quantity,
+                // price_at_sale: editedProduct.price_at_sale || editedProduct.price, // Fiyat düzenlemesi aktif değil
+              })
+              .eq('id', editedProduct.id);
+            if (updateError) {
+              throw new Error(`Ürün güncellenirken hata (${editedProduct.name || 'ID: ' + editedProduct.id}): ${updateError.message}`);
+            }
+          }
+        } else { // Yeni ürün (ID'si yok veya originalProducts'ta bulunamadı)
+          // Yeni ürünlerin `product_id`si ve diğer gerekli bilgilerinin olması lazım.
+          // Geçici `temp_id`leri olan ürünler burada işlenebilir.
+          if (editedProduct.temp_id) { // Placeholder ile eklenmiş yeni ürün
+            console.log("Yeni ürün ekleme denemesi:", editedProduct);
+            // product_id'nin null olmasından dolayı burada hata bekleniyor.
+            const { error: insertError } = await supabase
+              .from('sale_items')
+              .insert([{
+                sale_id: editableSaleData.id,
+                product_id: editedProduct.product_id, // BU DEĞER NULL OLDUĞU İÇİN HATA VERECEKTİR
+                quantity: editedProduct.quantity,
+                price_at_sale: editedProduct.price_at_sale || editedProduct.price || 0,
+              }]);
+            if (insertError) {
+              console.error("Yeni ürün eklenirken Supabase hatası:", insertError);
+              throw new Error(`Yeni ürün (${editedProduct.name}) eklenirken veritabanı hatası: ${insertError.message}. Lütfen bir ürün seçin.`);
+            }
+          }
+        }
+      }
+
+      // 3. Ana satış kaydını (sales) güncelle
+      const newTotalAmount = calculateTotalAmount(editedProducts);
+      // Ödeme yöntemi ID'sini al (eğer string ise)
+      // Bu kısım, ödeme yöntemlerinin nasıl yönetildiğine bağlı olarak daha karmaşık olabilir.
+      // Şimdilik editableSaleData.payment_method_id olduğunu varsayıyoruz.
+      let paymentMethodIdToSave = editableSaleData.payment_method_id;
+      if (typeof editableSaleData.paymentMethod === 'string' && !editableSaleData.payment_method_id) {
+        // Eğer sadece paymentMethod adı varsa ve ID yoksa, ID'yi bulmamız gerekir.
+        // Bu örnekte, `payment_methods` tablosundan bir arama simüle edilebilir veya önceden yüklenmiş olabilir.
+        // console.warn("payment_method_id eksik, paymentMethod adına göre bulunması gerekiyor.");
+        // Örnek: const foundMethod = allPaymentMethods.find(m => m.name === editableSaleData.paymentMethod);
+        // if (foundMethod) paymentMethodIdToSave = foundMethod.id;
+      }
+
+      const { data: saleUpdateData, error: saleUpdateError } = await supabase
+        .from('sales')
+        .update({
+          total_amount: newTotalAmount,
+          payment_method_id: paymentMethodIdToSave, 
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', editableSaleData.id);
+
+      if (saleUpdateError) {
+        throw new Error(`Ana satış kaydı güncellenirken hata: ${saleUpdateError.message}`);
+      }
+
+      Alert.alert("Başarılı", "Satış başarıyla güncellendi.");
+      setIsEditMode(false);
+      setDetailModalVisible(false);
+      fetchSales(currentPage, true); 
+
+    } catch (error) {
+      console.error("Satış güncellenirken hata:", error);
+      Alert.alert("Güncelleme Hatası", error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    // Değişiklikleri geri al (orijinal selectedSale verisine dön)
+    setEditableSaleData(JSON.parse(JSON.stringify(selectedSale))); 
+    setIsEditMode(false);
+    // Eğer kullanıcı doğrudan düzenleme modunda modalı açtıysa (gelecekteki bir özellik),
+    // o zaman setDetailModalVisible(false) da çağrılabilir.
+    // Şimdilik sadece düzenleme modundan çıkıyoruz.
+  };
+
+  // Tarih aralığına göre filtre oluştur (Sadece bugünü döndürecek şekilde güncellendi)
+  const getTodayDateFilter = () => {
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    return { startDate, endDate };
   };
 
   return (
@@ -648,33 +962,16 @@ const SalesScreen = ({ branchId }) => {
           </TouchableOpacity>
         </View>
         
-        {/* Tarih aralığı filtreleme */}
-        <View style={styles.dateFilterContainer}>
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false} 
-            contentContainerStyle={styles.dateFilterContent}
-          >
-            {dateRanges.map(range => (
-              <TouchableOpacity
-                key={range}
-                style={[
-                  styles.dateFilterOption,
-                  selectedDateRange === range && styles.activeDateFilterOption
-                ]}
-                onPress={() => changeDateRange(range)}
-              >
-                <Text 
-                  style={[
-                    styles.dateFilterText,
-                    selectedDateRange === range && styles.activeDateFilterText
-                  ]}
-                >
-                  {range}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+        {/* Toplam Satış Bilgileri -- YENİ BÖLÜM */}
+        <View style={styles.summaryContainer}>
+          <View style={styles.summaryBox}>
+            <Text style={styles.summaryLabel}>Toplam Satış</Text>
+            <Text style={styles.summaryValue}>{formatCurrency(grandTotalAmount)}</Text>
+          </View>
+          <View style={styles.summaryBox}>
+            <Text style={styles.summaryLabel}>Toplam Adet</Text>
+            <Text style={styles.summaryValue}>{totalCount}</Text>
+          </View>
         </View>
         
         {/* Arama çubuğu */}
@@ -703,39 +1000,14 @@ const SalesScreen = ({ branchId }) => {
           <>
             <FlatList
               data={filteredSales}
+              keyExtractor={(item, index) => `${item.id}-${index}`}
               renderItem={renderSaleItem}
-              keyExtractor={item => item.id.toString()}
-              style={styles.salesList}
               contentContainerStyle={styles.salesListContent}
               ref={flatListRef}
+              onEndReached={loadMoreItems}
+              onEndReachedThreshold={0.5} // Trigger onEndReached when last item is 0.5 of screen height away
+              ListFooterComponent={renderListFooter} // Footer loading indicator
             />
-            
-            {/* Sabit sayfalama kontrolleri */}
-            <View style={styles.fixedPagination}>
-              <View style={styles.paginationInner}>
-                <Text style={styles.paginationText}>
-                  Toplam {totalCount} satış - Sayfa {currentPage + 1} / {totalPages || 1}
-                </Text>
-                
-                <View style={styles.paginationArrows}>
-                  <TouchableOpacity 
-                    style={[styles.paginationArrow, currentPage === 0 && styles.paginationArrowDisabled]}
-                    onPress={() => handlePageChange(currentPage - 1)}
-                    disabled={currentPage === 0}
-                  >
-                    <Ionicons name="chevron-back" size={24} color={currentPage === 0 ? "#ccc" : "#fff"} />
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={[styles.paginationArrow, currentPage >= totalPages - 1 && styles.paginationArrowDisabled]}
-                    onPress={() => handlePageChange(currentPage + 1)}
-                    disabled={currentPage >= totalPages - 1}
-                  >
-                    <Ionicons name="chevron-forward" size={24} color={currentPage >= totalPages - 1 ? "#ccc" : "#fff"} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
           </>
         ) : (
           <View style={styles.emptyContainer}>
@@ -750,78 +1022,210 @@ const SalesScreen = ({ branchId }) => {
         visible={detailModalVisible}
         transparent={true}
         animationType="slide"
-        onRequestClose={() => setDetailModalVisible(false)}
+        onRequestClose={() => {
+          setIsEditMode(false);
+          setDetailModalVisible(false);
+        }}
       >
         <SafeAreaView style={styles.modalContainer}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Sipariş Detayı</Text>
-              <TouchableOpacity onPress={() => setDetailModalVisible(false)}>
+              <Text style={styles.modalTitle}>
+                {isEditMode ? "Satışı Düzenle" : "Sipariş Detayı"}
+              </Text>
+              {!isEditMode && (
+                <TouchableOpacity onPress={() => setIsEditMode(true)} style={styles.editModeButton}>
+                  <Ionicons name="pencil" size={20} color="#1e3a8a" />
+                  <Text style={styles.editModeButtonText}>Düzenle</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => {
+                setIsEditMode(false);
+                setDetailModalVisible(false);
+              }}>
                 <Ionicons name="close" size={24} color="#333" />
               </TouchableOpacity>
             </View>
             
-            {selectedSale && (
+            {editableSaleData && (
+              <FlatList
+                style={{ flex: 1 }} // Replaces ScrollView's flex: 1 behavior
+                data={loadingDetails ? [] : (editableSaleData.products || [])}
+                renderItem={({ item: product, index }) => renderEditableProductItem(product, index)}
+                keyExtractor={(pItem, pIndex) => pItem.id || pItem.temp_id || `product-${pIndex}`}
+                ListHeaderComponent={
+                  <>
               <View style={styles.selectedSaleSummary}>
-                <Text style={styles.selectedSaleNumber}>{selectedSale.orderNumber}</Text>
-                <Text style={styles.selectedSaleDate}>{formatDate(selectedSale.date)}</Text>
+                      <Text style={styles.selectedSaleNumber}>{editableSaleData.orderNumber}</Text>
+                      <Text style={styles.selectedSaleDate}>{formatDate(new Date(editableSaleData.date))}</Text>
                 
                 <View style={styles.selectedSaleInfo}>
                   <View style={styles.infoItem}>
                     <Text style={styles.infoLabel}>Şube:</Text>
-                    <Text style={styles.infoValue}>{selectedSale.branchName}</Text>
+                          {isEditMode ? (
+                            <TextInput 
+                              style={styles.editableTextInput}
+                              value={editableSaleData.branchName} 
+                              editable={false}
+                            />
+                          ) : (
+                            <Text style={styles.infoValue}>{editableSaleData.branchName}</Text>
+                          )}
                   </View>
                   
                   <View style={styles.infoItem}>
                     <Text style={styles.infoLabel}>Ödeme:</Text>
-                    <Text style={styles.infoValue}>{selectedSale.paymentMethod}</Text>
+                          {isEditMode ? (
+                            <TextInput 
+                              style={styles.editableTextInput}
+                              value={editableSaleData.paymentMethod} 
+                              onChangeText={(text) => setEditableSaleData({...editableSaleData, paymentMethod: text})} 
+                            />
+                          ) : (
+                            <Text style={styles.infoValue}>{editableSaleData.paymentMethod}</Text>
+                          )}
                   </View>
                   
                   <View style={styles.infoItem}>
                     <Text style={styles.infoLabel}>Kasiyer:</Text>
-                    <Text style={styles.infoValue}>{selectedSale.cashier}</Text>
+                          {isEditMode ? (
+                            <TextInput 
+                              style={styles.editableTextInput}
+                              value={editableSaleData.cashier} 
+                              editable={false}
+                            />
+                          ) : (
+                            <Text style={styles.infoValue}>{editableSaleData.cashier}</Text>
+                          )}
                   </View>
                   
                   <View style={styles.infoItem}>
                     <Text style={styles.infoLabel}>Durum:</Text>
-                    <View style={[styles.statusBadgeSmall, { backgroundColor: getStatusColor(selectedSale.status) }]}>
-                      <Text style={styles.statusTextSmall}>{getStatusText(selectedSale.status)}</Text>
+                          {isEditMode ? (
+                            <TextInput 
+                              style={styles.editableTextInput}
+                              value={editableSaleData.status} 
+                              onChangeText={(text) => setEditableSaleData({...editableSaleData, status: text})} 
+                            />
+                          ) : (
+                            <View style={[styles.statusBadgeSmall, { backgroundColor: getStatusColor(editableSaleData.status) }]}>
+                              <Text style={styles.statusTextSmall}>{getStatusText(editableSaleData.status)}</Text>
                     </View>
+                          )}
                   </View>
                 </View>
               </View>
-            )}
             
             <View style={styles.modalDivider} />
             
             <Text style={styles.detailSectionTitle}>Ürünler</Text>
-            
-            {loadingDetails ? (
+                  </>
+                }
+                ListFooterComponent={
+                  <>
+                    {isEditMode && (
+                      <TouchableOpacity onPress={openProductSelectionModal} style={styles.addProductButton}>
+                        <Ionicons name="add-circle-outline" size={22} color="#1e3a8a" />
+                        <Text style={styles.addProductButtonText}>Ürün Ekle</Text>
+                      </TouchableOpacity>
+                    )}
+                    
+                    {editableSaleData && ( // Total amount should always be part of the scrollable content
+                      <View style={styles.totalContainer}>
+                        <Text style={styles.totalLabel}>Toplam:</Text>
+                        <Text style={styles.totalAmount}>{formatCurrency(calculateTotalAmount(editableSaleData.products))}</Text>
+                      </View>
+                    )}
+                  </>
+                }
+                ListEmptyComponent={
+                  loadingDetails ? (
               <View style={styles.detailLoadingContainer}>
                 <ActivityIndicator size="small" color="#1e3a8a" />
                 <Text style={styles.detailLoadingText}>Detaylar yükleniyor...</Text>
               </View>
-            ) : selectedSale && selectedSale.products.length > 0 ? (
-              <FlatList
-                data={selectedSale.products}
-                renderItem={renderOrderDetailItem}
-                keyExtractor={item => item.id.toString()}
-                style={styles.detailsList}
+                  ) : (
+                    <Text style={styles.noDetailsText}>Ürün bulunamadı</Text>
+                  )
+                }
               />
-            ) : (
-              <Text style={styles.noDetailsText}>Detay bulunamadı</Text>
             )}
-            
-            {selectedSale && (
-              <View style={styles.totalContainer}>
-                <Text style={styles.totalLabel}>Toplam:</Text>
-                <Text style={styles.totalAmount}>{formatCurrency(selectedSale.amount)}</Text>
+
+            {isEditMode && (
+              <View style={styles.modalFooter}>
+                <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={handleCancelEdit}>
+                  <Text style={styles.modalButtonText}>İptal</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleSaveSaleChanges}>
+                  <Text style={styles.modalButtonText}>Değişiklikleri Kaydet</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
         </SafeAreaView>
       </Modal>
+      {/* Ürün Seçim Modalı */}
+      <ProductSelectionModal 
+        visible={productSelectionModalVisible}
+        onClose={() => setProductSelectionModalVisible(false)}
+        products={allProductsForSelection}
+        onProductSelect={handleProductSelected}
+        loading={loadingProducts}
+      />
     </View>
+  );
+};
+
+const ProductSelectionModal = ({ visible, onClose, products, onProductSelect, loading }) => {
+  const renderProductSelectItem = ({ item }) => (
+    <TouchableOpacity 
+      style={styles.productSelectItem}
+      onPress={() => onProductSelect(item)}
+    >
+      <View style={styles.productSelectItemInfo}>
+        <Text style={styles.productSelectItemName}>{item.name}</Text>
+        <Text style={styles.productSelectItemStock}>Stok: {item.stock_quantity === null || item.stock_quantity === undefined ? 'N/A' : item.stock_quantity}</Text>
+      </View>
+      <Text style={styles.productSelectItemPrice}>{formatCurrency(item.price)}</Text>
+    </TouchableOpacity>
+  );
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <SafeAreaView style={styles.productSelectionModalContainer}> 
+        <View style={styles.productSelectionModalContent}>
+          <View style={styles.productSelectionModalHeader}>
+            <Text style={styles.productSelectionModalTitle}>Ürün Seç</Text>
+            <TouchableOpacity onPress={onClose}>
+              <Ionicons name="close" size={24} color="#333" />
+            </TouchableOpacity>
+          </View>
+
+          {loading ? (
+            <View style={styles.centeredLoader}>
+              <ActivityIndicator size="large" color="#1e3a8a" />
+              <Text>Ürünler yükleniyor...</Text>
+            </View>
+          ) : products.length === 0 ? (
+            <View style={styles.centeredMessageContainer}>
+              <Text style={styles.centeredMessageText}>Kayıtlı ürün bulunamadı.</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={products}
+              renderItem={renderProductSelectItem}
+              keyExtractor={(item) => item.id.toString()}
+              style={styles.productSelectionList}
+            />
+          )}
+        </View>
+      </SafeAreaView>
+    </Modal>
   );
 };
 
@@ -933,20 +1337,23 @@ const styles = StyleSheet.create({
     padding: 12,
     paddingBottom: 80, // Sabit sayfalama kontrollerinin altında içerik kalmaması için
   },
-  saleCard: {
+  saleItemContainer: {
     backgroundColor: '#fff',
-    borderRadius: 8,
-    marginBottom: 12,
+    borderRadius: 10,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#ddd',
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 1,
-    overflow: 'hidden',
+    shadowRadius: 2,
+    overflow: 'visible', // Silme butonu için visible olabilir ya da padding ile ayarlanır
+    position: 'relative', // Silme butonunun pozisyonlanması için
   },
-  saleCardHeader: {
+  saleItemHeader: {
     padding: 12,
-    backgroundColor: '#f9f9f9',
+    backgroundColor: 'transparent',
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
   },
@@ -955,73 +1362,140 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#333',
   },
-  saleCardDetails: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  paymentInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 5,
-  },
-  paymentLabel: {
-    fontSize: 14,
-    color: '#333',
-  },
-  cashierInfo: {
+  dateText: {
     fontSize: 14,
     color: '#666',
   },
-  productsList: {
-    padding: 12,
-    backgroundColor: '#f9f9f9',
+  saleItemBody: {
+    paddingHorizontal: 12,
+    paddingVertical: 8, // Üst ve alt boşluğu azalttık
+    // borderBottomWidth: 1, // Kaldırıldı, ürünler bölümü kendi ayırıcısını kullanabilir
+    // borderBottomColor: '#eee',
   },
-  productsTitle: {
+  saleItemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6, // Satırlar arası boşluk
+  },
+  statusRow: {
+    marginBottom: 0, // Durum satırı için alt boşluğu kaldır
+  },
+  amountContainer: { // Bu stil artık doğrudan kullanılmıyor, saleItemRow ve amountLabel/Text kullanılıyor
+    marginBottom: 5,
+  },
+  amountLabel: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+  },
+  amountText: {
     fontSize: 14,
     fontWeight: 'bold',
-    marginBottom: 5,
+    color: '#007bff', // Mavi renk vurgusu
   },
-  productItem: {
-    marginBottom: 5,
+  infoLabel: {
+    fontSize: 14,
+    color: '#555',
+    marginRight: 5,
   },
-  saleCardActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    padding: 8,
-    backgroundColor: '#fff',
-  },
-  editButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 4,
-    backgroundColor: '#f0f0f0',
-    marginRight: 8,
-  },
-  editButtonText: {
+  infoValue: {
+    fontSize: 14,
     color: '#333',
-    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'right',
   },
-  deleteButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 4,
-    backgroundColor: '#f44336',
-  },
-  deleteButtonText: {
-    color: '#fff',
-    fontSize: 14,
+  statusContainer: { // Bu stil artık doğrudan kullanılmıyor, saleItemRow ve statusBadge kullanılıyor
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   statusBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
     alignSelf: 'flex-start',
+    fontWeight: 'bold',
   },
   statusText: {
     color: '#fff',
     fontSize: 12,
     fontWeight: 'bold',
+  },
+  saleItemFooter: { // Bu stil artık doğrudan kullanılmıyor, bilgiler body içine taşındı
+    padding: 8,
+    backgroundColor: '#fff',
+  },
+  paymentMethodText: { // infoValue veya benzeri stillerle birleştirildi
+    fontSize: 14,
+    color: '#666',
+  },
+  cashierText: { // infoValue veya benzeri stillerle birleştirildi
+    fontSize: 14,
+    color: '#666',
+  },
+  deleteButton: { // Bu stil adı deleteButtonTopRight olarak değişti ve güncellendi
+    padding: 10,
+    borderRadius: 4,
+    backgroundColor: '#f44336',
+  },
+  deleteButtonTopRight: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    padding: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)', // Hafif transparan arka plan
+    borderRadius: 20, // Yuvarlak buton
+    zIndex: 1, // Diğer elemanların üzerinde kalması için
+  },
+  productsSection: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    marginTop: 8, 
+  },
+  productsSectionTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 8,
+  },
+  productDetailItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f5f5f5', // Çok hafif bir ayırıcı
+  },
+  productNameText: {
+    flex: 2, // Ürün adı daha fazla yer kaplasın
+    fontSize: 13,
+    color: '#444',
+  },
+  productQuantityText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#666',
+    textAlign: 'center',
+  },
+  productPriceText: {
+    flex: 1.5, // Fiyat biraz daha fazla yer kaplasın
+    fontSize: 13,
+    color: '#444',
+    textAlign: 'right',
+    fontWeight: '500',
+  },
+  footerLoadingContainer: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footerLoadingText: {
+    marginTop: 10,
+    fontSize: 14,
+    color: '#666',
   },
   modalContainer: {
     flex: 1,
@@ -1072,48 +1546,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 8,
-  },
-  infoLabel: {
-    fontSize: 14,
-    color: '#666',
-    width: 70,
-  },
-  infoValue: {
-    fontSize: 14,
-    color: '#333',
-    fontWeight: '500',
-  },
-  statusBadgeSmall: {
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 4,
-  },
-  statusTextSmall: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  modalDivider: {
-    height: 8,
-    backgroundColor: '#f5f5f5',
-  },
-  detailSectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-    padding: 16,
-    paddingBottom: 8,
-  },
-  detailLoadingContainer: {
-    padding: 20,
-    alignItems: 'center',
-  },
-  detailLoadingText: {
-    marginTop: 8,
-    color: '#666',
-  },
-  detailsList: {
-    maxHeight: 300,
   },
   detailItem: {
     padding: 16,
@@ -1169,50 +1601,239 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#00a86b',
   },
-  fixedPagination: {
-    position: 'absolute',
-    bottom: 50,
-    left: 0,
-    right: 0,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#ddd',
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
-    padding: 15,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 5,
-    zIndex: 1000,
+  editModeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#1e3a8a',
   },
-  paginationInner: {
+  editModeButtonText: {
+    marginLeft: 5,
+    color: '#1e3a8a',
+    fontWeight: 'bold',
+  },
+  modalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    backgroundColor: '#f9f9f9',
+  },
+  modalButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 5,
+    marginLeft: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelButton: {
+    backgroundColor: '#6c757d',
+  },
+  saveButton: {
+    backgroundColor: '#1e3a8a',
+  },
+  modalButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  editableTextInput: {
+    flex: 1,
+    borderBottomWidth: 1,
+    borderColor: '#ccc',
+    paddingVertical: Platform.OS === 'ios' ? 8 : 4,
+    paddingHorizontal: 5,
+    fontSize: 14,
+    color: '#333',
+    textAlign: 'right',
+  },
+  modalBodyScrollView: {
+    flex: 1,
+  },
+  editableProductItemContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16, // modalContent padding'i ile uyumlu olabilir
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
-  paginationText: {
+  editableProductName: {
+    flex: 2,
     fontSize: 14,
     color: '#333',
-    fontWeight: '500',
   },
-  paginationArrows: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  editableProductNameFixed: { // Düzenleme modunda ürün adı için, flex ile diğer inputlara yer açar
+    flex: 1.5, // Diğer inputlar için biraz daha az yer
+    fontSize: 14,
+    color: '#333',
+    marginRight: 5, // Input ile arasında boşluk
   },
-  paginationArrow: {
-    padding: 10,
-    borderRadius: 8,
-    backgroundColor: '#1e3a8a',
-    marginLeft: 8,
-    minWidth: 45,
-    height: 45,
+  editableProductQuantity: {
+    flex: 1,
+    fontSize: 14,
+    color: '#333',
+    textAlign: 'center',
+  },
+  editableProductPrice: {
+    flex: 1,
+    fontSize: 14,
+    color: '#333',
+    textAlign: 'right',
+  },
+  editableProductTotalPrice: {
+    flex: 1.5,
+    fontSize: 14,
+    color: '#333',
+    textAlign: 'right',
+    fontWeight: 'bold',
+  },
+  editableNumericInput: {
+    flex: 0.8, // Miktar ve fiyat inputları için daha dar alan
+    borderBottomWidth: 1,
+    borderColor: '#007bff',
+    paddingVertical: Platform.OS === 'ios' ? 6 : 2,
+    paddingHorizontal: 4,
+    fontSize: 14,
+    color: '#333',
+    textAlign: 'center',
+    marginHorizontal: 2,
+  },
+  editablePriceTextDisplay: { // Düzenlenemeyen fiyat için stil
+    flex: 1,
+    fontSize: 14,
+    color: '#333',
+    textAlign: 'right',
+    paddingHorizontal: 4, // editableNumericInput ile benzer padding
+    marginHorizontal: 2,
+  },
+  deleteItemButton: {
+    paddingLeft: 8, // TotalPrice ile arasında boşluk
     justifyContent: 'center',
     alignItems: 'center',
   },
-  paginationArrowDisabled: {
-    backgroundColor: '#e0e0e0',
+  addProductButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    marginHorizontal: 16, // modalContent paddingi ile uyumlu
+    marginTop: 10,
+    backgroundColor: '#e8f0fe',
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#1e3a8a',
+  },
+  addProductButtonText: {
+    marginLeft: 8,
+    fontSize: 16,
+    color: '#1e3a8a',
+    fontWeight: 'bold',
+  },
+  summaryContainer: { // YENİ STİL
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#fff', // Veya header ile aynı renk
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+    marginTop:0, // Header'dan sonra boşluk olmaması için
+  },
+  summaryBox: { // YENİ STİL
+    alignItems: 'center',
+    paddingHorizontal:10,
+  },
+  summaryLabel: { // YENİ STİL
+    fontSize: 13,
+    color: '#555',
+    marginBottom: 4,
+  },
+  summaryValue: { // YENİ STİL
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#1e3a8a',
+  },
+  productSelectionModalContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center', // İçeriği dikeyde ortala
+    alignItems: 'center',    // İçeriği yatayda ortala
+  },
+  productSelectionModalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 0, // Başlık ve liste kendi padding'ini yönetecek
+    width: '90%', // Ekran genişliğinin %90'ı
+    maxHeight: '80%', // Ekran yüksekliğinin %80'i
+    overflow: 'hidden', // border-radius'un FlatList'i kesmesi için
+  },
+  productSelectionModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  productSelectionModalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  productSelectionList: {
+    // FlatList'in maxHeight'i productSelectionModalContent tarafından yönetiliyor
+  },
+  productSelectItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  productSelectItemInfo: {
+    flex: 1, // İsim ve stok için daha fazla alan
+    marginRight: 10, 
+  },
+  productSelectItemName: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#333',
+  },
+  productSelectItemStock: {
+    fontSize: 12,
+    color: '#777',
+    marginTop: 2,
+  },
+  productSelectItemPrice: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#1e3a8a',
+  },
+  centeredLoader: {
+    flex: 1, // Eğer FlatList yoksa alanı kaplaması için
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  centeredMessageContainer: {
+    flex: 1, // Eğer FlatList yoksa alanı kaplaması için
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  centeredMessageText: {
+    fontSize: 16,
+    color: '#555',
+    textAlign: 'center',
   },
 });
 

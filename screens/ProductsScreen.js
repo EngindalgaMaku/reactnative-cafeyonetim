@@ -38,7 +38,7 @@ const ProductsScreen = ({ branchId }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [totalCount, setTotalCount] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
   
   // FlatList referansı
   const flatListRef = React.useRef();
@@ -51,6 +51,8 @@ const ProductsScreen = ({ branchId }) => {
   const [isActive, setIsActive] = useState(true);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [imageUrl, setImageUrl] = useState(null);
+  const [allMasterIngredients, setAllMasterIngredients] = useState([]);
+  const [currentProductIngredients, setCurrentProductIngredients] = useState([]);
   
   // Error messages
   const [errors, setErrors] = useState({});
@@ -59,6 +61,7 @@ const ProductsScreen = ({ branchId }) => {
   useEffect(() => {
     fetchCategories();
     fetchProducts();
+    fetchMasterIngredients();
   }, []);
 
   // Şube ID'si değiştiğinde ürünleri yeniden getir
@@ -68,10 +71,11 @@ const ProductsScreen = ({ branchId }) => {
     }
   }, [branchId]);
 
-  // Sayfa değiştiğinde veya pageSize değiştiğinde ürünleri yeniden getir
+  // Şube ID'si veya Kategori değiştiğinde ürünleri yeniden ve sıfırdan getir
   useEffect(() => {
-    fetchProducts();
-  }, [currentPage, pageSize, selectedCategory]);
+    setCurrentPage(1);
+    fetchProducts(1, true);
+  }, [branchId, selectedCategory]);
 
   // Kategorileri getir
   const fetchCategories = async () => {
@@ -92,35 +96,50 @@ const ProductsScreen = ({ branchId }) => {
     }
   };
 
-  // Ürünleri getir
-  const fetchProducts = async () => {
-    setLoading(true);
+  // Ana Malzemeleri Getir
+  const fetchMasterIngredients = async () => {
     try {
-      // Önce toplam ürün sayısını öğren
-      const countQuery = supabase
-        .from('products')
-        .select('id', { count: 'exact' });
-      
-      // Kategori filtresi varsa uygula
-      if (selectedCategory) {
-        countQuery.eq('category_id', selectedCategory);
+      const { data, error } = await supabase
+        .from('ingredients')
+        .select('id, name, unit')
+        .order('name');
+      if (error) throw error;
+      if (data) {
+        setAllMasterIngredients(data);
+      }
+    } catch (error) {
+      console.error('Ana malzemeler alınırken hata:', error);
+      Alert.alert('Hata', 'Ana malzemeler yüklenirken bir sorun oluştu.');
+    }
+  };
+
+  // Ürünleri getir
+  const fetchProducts = async (pageToFetch, isNewQuery = false) => {
+    if (isNewQuery) {
+      setLoading(true);
+    } else {
+      if (loadingMore || (products.length >= totalCount && totalCount > 0)) {
+        return;
+      }
+      setLoadingMore(true);
+    }
+
+    try {
+      const from = (pageToFetch - 1) * pageSize;
+      const to = from + pageSize - 1;
+
+      if (isNewQuery) {
+        let countQuery = supabase
+          .from('products')
+          .select('id', { count: 'exact' });
+        if (selectedCategory) {
+          countQuery = countQuery.eq('category_id', selectedCategory);
+        }
+        const { count, error: countError } = await countQuery;
+        if (countError) throw countError;
+        setTotalCount(count || 0);
       }
       
-      // Toplam ürün sayısını al
-      const { count, error: countError } = await countQuery;
-      
-      if (countError) throw countError;
-      
-      setTotalCount(count || 0);
-      setTotalPages(Math.max(Math.ceil((count || 0) / pageSize), 1));
-      
-      // Sayfalama için başlangıç ve bitiş indeksleri
-      const from = (currentPage - 1) * pageSize;
-      const to = from + pageSize - 1;
-      
-      console.log(`Sayfalama: ${from} - ${to}, Toplam: ${count}, Sayfa: ${currentPage}/${Math.ceil((count || 0) / pageSize)}`);
-      
-      // Ürünleri getir
       let query = supabase
         .from('products')
         .select(`
@@ -133,25 +152,71 @@ const ProductsScreen = ({ branchId }) => {
         .order('name')
         .range(from, to);
       
-      // Kategori filtresi varsa uygula
       if (selectedCategory) {
         query = query.eq('category_id', selectedCategory);
       }
       
       const { data, error } = await query;
-      
       if (error) throw error;
       
       if (data) {
-        setProducts(data);
-        console.log(`${data.length} ürün yüklendi.`);
+        if (isNewQuery) {
+          setProducts(data);
+          console.log(`${data.length} ürün yüklendi (yeni sorgu). Sayfa: ${pageToFetch}, Toplam: ${totalCount}`);
+        } else {
+          setProducts(prevProducts => [...prevProducts, ...data]);
+          console.log(`${data.length} ürün daha yüklendi. Sayfa: ${pageToFetch}, Mevcut: ${products.length + data.length}, Toplam: ${totalCount}`);
+        }
       }
       
-      setLoading(false);
     } catch (error) {
       console.error('Ürünler alınırken hata:', error);
       Alert.alert('Hata', 'Ürünler yüklenirken bir sorun oluştu.');
-      setLoading(false);
+    } finally {
+      if (isNewQuery) {
+        setLoading(false);
+      } else {
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  // Belirli Bir Ürünün Malzemelerini Getir
+  const fetchProductSpecificIngredients = async (productId) => {
+    if (!productId) {
+      setCurrentProductIngredients([]);
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from('product_ingredients')
+        .select(`
+          quantity_required,
+          ingredients (
+            id,
+            name,
+            unit
+          )
+        `)
+        .eq('product_id', productId);
+
+      if (error) throw error;
+
+      if (data) {
+        const formattedIngredients = data.map(pi => ({
+          ingredient_id: pi.ingredients.id,
+          name: pi.ingredients.name,
+          unit: pi.ingredients.unit,
+          quantity_required: pi.quantity_required
+        }));
+        setCurrentProductIngredients(formattedIngredients);
+      } else {
+        setCurrentProductIngredients([]);
+      }
+    } catch (error) {
+      console.error('Ürünün malzemeleri alınırken hata:', error);
+      setCurrentProductIngredients([]); // Hata durumunda boşalt
+      Alert.alert('Hata', 'Ürünün malzemeleri yüklenirken bir sorun oluştu.');
     }
   };
 
@@ -171,19 +236,21 @@ const ProductsScreen = ({ branchId }) => {
     setIsActive(true);
     setUploadedImage(null);
     setImageUrl(null);
+    setCurrentProductIngredients([]);
     setErrors({});
   };
 
   // Düzenleme modunu başlat
-  const startEdit = (product) => {
+  const startEdit = async (product) => {
     setIsEditing(true);
     setCurrentProduct(product);
     setName(product.name);
     setPrice(product.price ? product.price.toString() : '');
     setDescription(product.description || '');
     setCategoryId(product.category_id);
-    setIsActive(product.is_active !== false); // null veya undefined ise true kabul et
+    setIsActive(product.is_active !== false);
     setImageUrl(product.image_url);
+    await fetchProductSpecificIngredients(product.id);
     setModalVisible(true);
   };
 
@@ -268,7 +335,6 @@ const ProductsScreen = ({ branchId }) => {
     setLoading(true);
     
     try {
-      // Eğer yeni resim yüklendiyse, storage'a yükle
       let finalImageUrl = imageUrl;
       if (uploadedImage) {
         finalImageUrl = await uploadImageAndGetUrl();
@@ -284,36 +350,71 @@ const ProductsScreen = ({ branchId }) => {
         updated_at: new Date()
       };
       
-      let result;
+      let savedProduct;
       
       if (isEditing && currentProduct) {
-        // Ürün güncelleme
-        result = await supabase
+        const { data, error } = await supabase
           .from('products')
           .update(productData)
-          .eq('id', currentProduct.id);
+          .eq('id', currentProduct.id)
+          .select()
+          .single();
+        if (error) throw error;
+        savedProduct = data;
       } else {
-        // Yeni ürün ekleme
         productData.created_at = new Date();
-        result = await supabase
+        const { data, error } = await supabase
           .from('products')
-          .insert(productData);
+          .insert(productData)
+          .select()
+          .single();
+        if (error) throw error;
+        savedProduct = data;
+      }
+
+      if (!savedProduct || !savedProduct.id) {
+        throw new Error("Ürün ID'si alınamadı.");
+      }
+
+      // Malzemeleri güncelle/ekle (product_ingredients tablosu)
+      // Önce mevcut ürün ID'sine ait tüm malzemeleri sil
+      const { error: deleteError } = await supabase
+        .from('product_ingredients')
+        .delete()
+        .eq('product_id', savedProduct.id);
+
+      if (deleteError) {
+        console.error('Eski malzemeler silinirken hata:', deleteError);
+        // Silme hatası olsa bile devam etmeyi deneyebiliriz veya kullanıcıya bilgi verebiliriz.
+        // Şimdilik devam ediyoruz.
       }
       
-      if (result.error) throw result.error;
+      // Sonra yeni malzemeleri ekle
+      if (currentProductIngredients.length > 0) {
+        const ingredientsToInsert = currentProductIngredients.map(ing => ({
+          product_id: savedProduct.id,
+          ingredient_id: ing.ingredient_id,
+          quantity_required: parseFloat(ing.quantity_required) || 0
+        }));
+
+        const { error: insertError } = await supabase
+          .from('product_ingredients')
+          .insert(ingredientsToInsert);
+
+        if (insertError) throw insertError;
+      }
       
-      // Başarılı ise formu kapat ve ürünleri yenile
       setModalVisible(false);
       resetForm();
-      fetchProducts();
+      fetchProducts(currentPage, true);
       
       Alert.alert(
         'Başarılı', 
-        isEditing ? 'Ürün başarıyla güncellendi.' : 'Yeni ürün başarıyla eklendi.'
+        isEditing ? 'Ürün ve malzemeleri başarıyla güncellendi.' : 'Yeni ürün ve malzemeleri başarıyla eklendi.'
       );
     } catch (error) {
       console.error('Ürün kaydedilirken hata:', error);
-      Alert.alert('Hata', 'Ürün kaydedilirken bir sorun oluştu.');
+      Alert.alert('Hata', 'Ürün ve malzemeler kaydedilirken bir sorun oluştu: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -391,75 +492,105 @@ const ProductsScreen = ({ branchId }) => {
 
   // Kategori adını ID'ye göre getir
   const getCategoryNameById = (categoryId) => {
-    const category = categories.find(c => c.id === categoryId);
-    return category ? category.name : 'Kategori Yok';
+    const category = categories.find(cat => cat.id === categoryId);
+    return category ? category.name : 'Kategorisiz';
+  };
+
+  // Malzeme modalını açmak için fonksiyon
+  const openIngredientsModal = async (product) => {
+    if (!product || !product.id) return;
+    
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('product_ingredients')
+        .select(`
+          quantity_required,
+          ingredients (
+            name,
+            unit
+          )
+        `)
+        .eq('product_id', product.id);
+
+      if (error) throw error;
+
+      let message = `${product.name} - Malzemeler:\n`;
+      if (data && data.length > 0) {
+        data.forEach(pi => {
+          message += `- ${pi.ingredients.name}: ${pi.quantity_required} ${pi.ingredients.unit || ''}`;
+        });
+      } else {
+        message += "Bu ürün için malzeme bilgisi girilmemiş.";
+      }
+      Alert.alert("Malzeme Bilgisi", message, [{ text: "Tamam" }]);
+
+    } catch (error) {
+      console.error(`${product.name} malzemeleri alınırken hata:`, error);
+      Alert.alert('Hata', 'Malzemeler yüklenirken bir sorun oluştu.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Render ürün elementi
-  const renderProductItem = ({ item }) => (
-    <View style={styles.productItem}>
-      <View style={styles.productImageContainer}>
-        <Image 
-          source={{ uri: item.image_url || 'https://via.placeholder.com/100' }}
-          style={styles.productImage}
-        />
-      </View>
-      
-      <View style={styles.productInfo}>
-        <Text style={styles.productName}>{item.name}</Text>
-        <Text style={styles.productCategory}>{item.categories?.name || getCategoryNameById(item.category_id)}</Text>
-        <Text style={styles.productPrice}>₺{parseFloat(item.price).toLocaleString('tr-TR')}</Text>
-        {item.description && <Text style={styles.productDescription} numberOfLines={2}>{item.description}</Text>}
-      </View>
-      
-      <View style={styles.productActions}>
-        <TouchableOpacity 
-          style={[styles.statusButton, item.is_active ? styles.activeStatus : styles.inactiveStatus]}
-          onPress={() => toggleProductStatus(item)}
-        >
-          <Text style={styles.statusText}>{item.is_active ? 'Aktif' : 'Pasif'}</Text>
+  const renderProductItem = ({ item }) => {
+    return (
+      <View style={styles.productItemContainer}>
+        <TouchableOpacity onPress={() => openIngredientsModal(item)} style={styles.productTouchableContent}>
+          <Image 
+            source={(item.image_url && item.image_url !== '/noimage.jpg') ? { uri: item.image_url } : require('../assets/noimage.jpg')} 
+            style={styles.productImage} 
+            resizeMode="cover"
+          />
+          <View style={styles.productInfoContainer}>
+            <Text style={styles.productName}>{item.name}</Text>
+            <Text style={styles.productCategory}>{getCategoryNameById(item.category_id)}</Text>
+            <Text style={styles.productPrice}>{item.price ? `${item.price.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}` : 'Fiyat Yok'}</Text>
+            <Text style={[styles.productStatus, item.is_active ? styles.activeStatus : styles.inactiveStatus]}>
+              {item.is_active ? 'Aktif' : 'Pasif'}
+            </Text>
+          </View>
         </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.actionButton} onPress={() => startEdit(item)}>
-          <MaterialIcons name="edit" size={22} color="#2196F3" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.actionButton} onPress={() => handleDeleteProduct(item)}>
-          <MaterialIcons name="delete" size={22} color="#F44336" />
-        </TouchableOpacity>
+        {/* Ürün düzenleme/silme butonları veya toggle eklenebilir */}
+         <View style={styles.productActionsContainer}>
+          <TouchableOpacity onPress={() => openIngredientsModal(item)} style={styles.actionButton}>
+            <MaterialIcons name="list-alt" size={22} color="#555" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => startEdit(item)} style={styles.actionButton}>
+            <Ionicons name="pencil" size={20} color="#1e3a8a" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => toggleProductStatus(item)} style={styles.actionButton}>
+            <Ionicons name={item.is_active ? "eye-off-outline" : "eye-outline"} size={22} color={item.is_active ? "#ff8c00" : "#4CAF50"} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDeleteProduct(item)} style={styles.actionButton}>
+            <Ionicons name="trash-outline" size={22} color="#F44336" />
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
-  );
-
-  // Sayfa değiştirme fonksiyonları
-  const goToPage = (page) => {
-    if (page >= 1 && page <= totalPages) {
-      setCurrentPage(page);
-      // Liste başına scroll et
-      if (flatListRef.current) {
-        flatListRef.current.scrollToOffset({ offset: 0, animated: true });
-      }
-    }
+    );
   };
 
-  const goToPreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-      // Liste başına scroll et
-      if (flatListRef.current) {
-        flatListRef.current.scrollToOffset({ offset: 0, animated: true });
-      }
+  const loadMoreProducts = () => {
+    if (loading || loadingMore || (totalCount > 0 && products.length >= totalCount)) {
+      console.log("Daha fazla yükleme engellendi:", {loading, loadingMore, productsLength: products.length, totalCount});
+      return;
     }
+    
+    const nextPage = currentPage + 1;
+    console.log(`Daha fazla ürün yükleniyor: sayfa ${nextPage}`);
+    setCurrentPage(nextPage);
+    fetchProducts(nextPage, false);
   };
 
-  const goToNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-      // Liste başına scroll et
-      if (flatListRef.current) {
-        flatListRef.current.scrollToOffset({ offset: 0, animated: true });
-      }
-    }
+  const renderListFooter = () => {
+    if (!loadingMore) return null;
+    return (
+      <View style={styles.footerLoadingContainer}>
+        <ActivityIndicator size="large" color="#1e3a8a" />
+        <Text style={styles.footerLoadingText}>Daha fazla yükleniyor...</Text>
+      </View>
+    );
   };
 
   return (
@@ -472,6 +603,13 @@ const ProductsScreen = ({ branchId }) => {
           <Ionicons name="add-circle" size={24} color="white" />
         </TouchableOpacity>
       </View>
+
+      {/* Toplam Ürün Adedi -- YENİ BÖLÜM */}
+      {!loading && (
+        <View style={styles.productCountContainer}>
+          <Text style={styles.productCountText}>Toplam Ürün: {totalCount}</Text>
+        </View>
+      )}
 
       <View style={styles.filterContainer}>
         <View style={styles.searchBar}>
@@ -546,36 +684,10 @@ const ProductsScreen = ({ branchId }) => {
           keyExtractor={item => item.id.toString()}
           contentContainerStyle={styles.productsList}
           showsVerticalScrollIndicator={false}
+          onEndReached={loadMoreProducts}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={renderListFooter}
         />
-      )}
-
-      {/* Sayfalama kontrolleri - sabit konumlu */}
-      {!loading && products.length > 0 && (
-        <View style={styles.fixedPagination}>
-          <View style={styles.paginationInner}>
-            <Text style={styles.paginationText}>
-              Toplam {totalCount} ürün - Sayfa {currentPage} / {totalPages}
-            </Text>
-            
-            <View style={styles.paginationArrows}>
-              <TouchableOpacity 
-                style={[styles.paginationArrow, currentPage === 1 && styles.paginationArrowDisabled]}
-                onPress={goToPreviousPage}
-                disabled={currentPage === 1}
-              >
-                <Ionicons name="chevron-back" size={24} color={currentPage === 1 ? "#ccc" : "#fff"} />
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.paginationArrow, currentPage === totalPages && styles.paginationArrowDisabled]}
-                onPress={goToNextPage}
-                disabled={currentPage === totalPages}
-              >
-                <Ionicons name="chevron-forward" size={24} color={currentPage === totalPages ? "#ccc" : "#fff"} />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
       )}
 
       {/* Ürün Ekleme/Düzenleme Modal */}
@@ -686,6 +798,72 @@ const ProductsScreen = ({ branchId }) => {
                   multiline
                   numberOfLines={4}
                 />
+              </View>
+
+              {/* Malzemeler -- YENİ ALAN */}
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Ürün Malzemeleri</Text>
+                {currentProductIngredients.map((ing, index) => (
+                  <View key={ing.ingredient_id || `new-${index}`} style={styles.ingredientRow}>
+                    <Text style={styles.ingredientNameText}>{ing.name} ({ing.unit || 'Birim Yok'})</Text>
+                    <TextInput
+                      style={styles.ingredientQuantityInput}
+                      placeholder="Miktar"
+                      value={ing.quantity_required ? ing.quantity_required.toString() : ''}
+                      onChangeText={(text) => {
+                        const newIngredients = [...currentProductIngredients];
+                        newIngredients[index].quantity_required = text;
+                        setCurrentProductIngredients(newIngredients);
+                      }}
+                      keyboardType="numeric"
+                    />
+                    <TouchableOpacity onPress={() => {
+                      const newIngredients = currentProductIngredients.filter((_, i) => i !== index);
+                      setCurrentProductIngredients(newIngredients);
+                    }}>
+                      <Ionicons name="trash-outline" size={22} color="#F44336" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <TouchableOpacity 
+                  style={styles.addIngredientButton}
+                  onPress={() => {
+                    if (allMasterIngredients.length > 0) {
+                      const availableToAdd = allMasterIngredients.filter(
+                        masterIng => !currentProductIngredients.some(currentIng => currentIng.ingredient_id === masterIng.id)
+                      );
+
+                      if (availableToAdd.length === 0) {
+                        Alert.alert("Malzeme Yok", "Eklenebilecek yeni malzeme bulunmuyor veya tüm malzemeler zaten ekli.");
+                        return;
+                      }
+                      
+                      Alert.alert(
+                        "Malzeme Seç",
+                        "Eklemek istediğiniz malzemeyi seçin:",
+                        availableToAdd.map(masterIng => ({
+                          text: `${masterIng.name} (${masterIng.unit || ''})`,
+                          onPress: () => {
+                            setCurrentProductIngredients([
+                              ...currentProductIngredients,
+                              { 
+                                ingredient_id: masterIng.id, 
+                                name: masterIng.name, 
+                                unit: masterIng.unit, 
+                                quantity_required: '1'
+                              }
+                            ]);
+                          }
+                        })).concat([{text: "İptal", style: "cancel"}])
+                      );
+                    } else {
+                      Alert.alert("Ana Malzeme Listesi Boş", "Lütfen önce ana malzeme listesine veri ekleyin.");
+                    }
+                  }}
+                >
+                  <Ionicons name="add-circle-outline" size={24} color="#1e3a8a" />
+                  <Text style={styles.addIngredientButtonText}>Malzeme Ekle</Text>
+                </TouchableOpacity>
               </View>
               
               {/* Durum */}
@@ -836,7 +1014,7 @@ const styles = StyleSheet.create({
     padding: 10,
     paddingBottom: 80, // Sabit sayfalama kontrollerinin altında içerik kalmaması için
   },
-  productItem: {
+  productItemContainer: {
     flexDirection: 'row',
     backgroundColor: 'white',
     borderRadius: 10,
@@ -848,16 +1026,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 2,
   },
-  productImageContainer: {
-    marginRight: 15,
+  productTouchableContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
   },
   productImage: {
     width: 80,
     height: 80,
     borderRadius: 5,
     backgroundColor: '#f0f0f0',
+    marginRight: 10,
   },
-  productInfo: {
+  productInfoContainer: {
     flex: 1,
     justifyContent: 'center',
   },
@@ -876,32 +1057,23 @@ const styles = StyleSheet.create({
     color: '#1e3a8a',
     marginBottom: 5,
   },
-  productDescription: {
-    color: '#777',
-    fontSize: 13,
+  productStatus: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#333',
   },
-  productActions: {
+  activeStatus: {
+    color: '#4CAF50',
+  },
+  inactiveStatus: {
+    color: '#F44336',
+  },
+  productActionsContainer: {
     justifyContent: 'center',
     alignItems: 'flex-end',
   },
   actionButton: {
     padding: 8,
-  },
-  statusButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 5,
-    marginBottom: 10,
-  },
-  activeStatus: {
-    backgroundColor: '#e6f7ee',
-  },
-  inactiveStatus: {
-    backgroundColor: '#ffebee',
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: 'bold',
   },
   
   // Modal Styles
@@ -1029,50 +1201,66 @@ const styles = StyleSheet.create({
   cancelButtonText: {
     color: '#666',
   },
-  fixedPagination: {
-    position: 'absolute',
-    bottom: 50,
-    left: 0,
-    right: 0,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#ddd',
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
-    padding: 15,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 5,
-    zIndex: 1000,
+  footerLoadingContainer: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  paginationInner: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  footerLoadingText: {
+    marginTop: 10,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#333',
+  },
+  productCountContainer: {
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    backgroundColor: '#f0f0f0',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
     alignItems: 'center',
   },
-  paginationText: {
+  productCountText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#333',
+  },
+  ingredientRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  ingredientNameText: {
+    flex: 1,
     fontSize: 14,
     color: '#333',
-    fontWeight: '500',
   },
-  paginationArrows: {
+  ingredientQuantityInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    width: 80,
+    textAlign: 'center',
+    marginHorizontal: 10,
+  },
+  addIngredientButton: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  paginationArrow: {
+    backgroundColor: '#e0e7ff',
     padding: 10,
-    borderRadius: 8,
-    backgroundColor: '#1e3a8a',
-    marginLeft: 8,
-    minWidth: 45,
-    height: 45,
+    borderRadius: 5,
+    marginTop: 10,
     justifyContent: 'center',
-    alignItems: 'center',
   },
-  paginationArrowDisabled: {
-    backgroundColor: '#e0e0e0',
+  addIngredientButtonText: {
+    marginLeft: 8,
+    color: '#1e3a8a',
+    fontWeight: 'bold',
   },
 });
 

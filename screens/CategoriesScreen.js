@@ -309,14 +309,17 @@ const CategoriesScreen = ({ branchId }) => {
 
   // Render kategori elementi
   const renderCategoryItem = ({ item }) => (
-    <View style={styles.categoryItem}>
-      <View style={styles.categoryImageContainer}>
-        <Image 
-          source={{ uri: item.image_url || 'https://via.placeholder.com/100' }}
-          style={styles.categoryImage}
-        />
-      </View>
-      
+    <TouchableOpacity 
+      style={styles.categoryItemContainer} 
+      onPress={() => startEdit(item)}
+      onLongPress={() => handleDeleteCategory(item)}
+    >
+      <Image 
+        // Eğer item.image_url varsa ve '/noimage.jpg' değilse URI'yi kullan, yoksa lokal resmi kullan
+        source={item.image_url && item.image_url !== '/noimage.jpg' && item.image_url.trim() !== '' ? { uri: item.image_url } : require('../assets/noimage.jpg')}
+        style={styles.categoryImage} 
+        resizeMode="cover"
+      />
       <View style={styles.categoryInfo}>
         <Text style={styles.categoryName}>{item.name}</Text>
         {item.description && (
@@ -325,24 +328,18 @@ const CategoriesScreen = ({ branchId }) => {
           </Text>
         )}
       </View>
-      
       <View style={styles.categoryActions}>
-        <TouchableOpacity 
-          style={[styles.statusButton, item.is_active ? styles.activeStatus : styles.inactiveStatus]}
-          onPress={() => toggleCategoryStatus(item)}
-        >
-          <Text style={styles.statusText}>{item.is_active ? 'Aktif' : 'Pasif'}</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.actionButton} onPress={() => startEdit(item)}>
-          <MaterialIcons name="edit" size={22} color="#2196F3" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.actionButton} onPress={() => handleDeleteCategory(item)}>
-          <MaterialIcons name="delete" size={22} color="#F44336" />
-        </TouchableOpacity>
+        <Switch
+          trackColor={{ false: "#767577", true: "#81b0ff" }}
+          thumbColor={item.is_active !== false ? "#1e3a8a" : "#f4f3f4"}
+          ios_backgroundColor="#3e3e3e"
+          onValueChange={() => toggleCategoryStatus(item)}
+          value={item.is_active !== false} // null ve undefined durumlarını true olarak ele al
+          style={styles.statusSwitch}
+        />
+        <Ionicons name="chevron-forward" size={22} color="#ccc" />
       </View>
-    </View>
+    </TouchableOpacity>
   );
 
   return (
@@ -594,7 +591,7 @@ const styles = StyleSheet.create({
   categoriesList: {
     padding: 15,
   },
-  categoryItem: {
+  categoryItemContainer: {
     flexDirection: 'row',
     backgroundColor: 'white',
     borderRadius: 10,
@@ -605,9 +602,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 2,
-  },
-  categoryImageContainer: {
-    marginRight: 15,
   },
   categoryImage: {
     width: 60,
@@ -633,24 +627,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'flex-end',
   },
-  actionButton: {
-    padding: 8,
-  },
-  statusButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 5,
-    marginBottom: 10,
-  },
-  activeStatus: {
-    backgroundColor: '#e6f7ee',
-  },
-  inactiveStatus: {
-    backgroundColor: '#ffebee',
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: 'bold',
+  statusSwitch: {
+    transform: [{ scale: 0.8 }],
   },
   
   // Modal Styles

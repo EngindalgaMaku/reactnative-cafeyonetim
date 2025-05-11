@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialIcons, FontAwesome } from '@expo/vector-icons';
 import { supabase } from '../supabaseClient';
+import { Calendar } from 'react-native-calendars';
 
 const ReportsScreen = ({ branchId }) => {
   // State tanımlamaları
@@ -32,14 +33,22 @@ const ReportsScreen = ({ branchId }) => {
     transactionCount: 0,
     averageOrder: 0
   });
-  // Basit tarih seçici için ek state
-  const [tempDate, setTempDate] = useState('');
+  // Satışlar Raporu için Sayfalama State'leri
+  const [salesCurrentPage, setSalesCurrentPage] = useState(0);
+  const [salesPageSize, setSalesPageSize] = useState(50); // Varsayılan 50 satış
+  const [salesTotalCount, setSalesTotalCount] = useState(0);
+  const [salesLoadingMore, setSalesLoadingMore] = useState(false);
+  const [allSalesLoaded, setAllSalesLoaded] = useState(false); // Tüm satışların yüklenip yüklenmediğini takip et
   
   // Tarih formatlama yardımcı fonksiyonu
-  const formatDate = (date) => {
+  const formatDate = (date, format = 'DD/MM/YYYY') => {
     const day = date.getDate().toString().padStart(2, '0');
     const month = (date.getMonth() + 1).toString().padStart(2, '0');
     const year = date.getFullYear();
+
+    if (format === 'YYYY-MM-DD') {
+      return `${year}-${month}-${day}`;
+    }
     return `${day}/${month}/${year}`;
   };
 
@@ -71,6 +80,12 @@ const ReportsScreen = ({ branchId }) => {
   // Rapor verilerini getir
   useEffect(() => {
     if (selectedBranchId) {
+      // Rapor türü veya tarih aralığı değiştiğinde, satışlar için sayfalamayı sıfırla
+      if (activeReportType === 'sales') {
+        setSalesCurrentPage(0);
+        setReportData([]); // Önceki verileri temizle
+        setAllSalesLoaded(false);
+      }
       fetchReportData();
     }
   }, [selectedBranchId, activeReportType, dateRange]);
@@ -107,10 +122,21 @@ const ReportsScreen = ({ branchId }) => {
     }
   };
 
+  // Calendar onDayPress handler
+  const onDayPress = (day) => {
+    const newDate = new Date(day.year, day.month - 1, day.day);
+    if (datePickerMode === 'start') {
+      setDateRange({ ...dateRange, startDate: newDate });
+    } else {
+      setDateRange({ ...dateRange, endDate: newDate });
+    }
+    setShowDatePicker(false);
+  };
+
   // Tarih seçim modalını aç
   const showDatePickerModal = (mode) => {
     setDatePickerMode(mode);
-    setTempDate(formatDate(mode === 'start' ? dateRange.startDate : dateRange.endDate));
+    // setTempDate(formatDate(mode === 'start' ? dateRange.startDate : dateRange.endDate)); // No longer needed
     setShowDatePicker(true);
   };
 
@@ -118,14 +144,18 @@ const ReportsScreen = ({ branchId }) => {
   const fetchReportData = async () => {
     if (!selectedBranchId) return;
     
-    setLoading(true);
+    setLoading(true); // Genel yükleme durumu, ilk sayfa için
+    // salesLoadingMore, sayfa sonuna gelindiğinde kullanılır
     
     try {
       const startDateStr = dateRange.startDate.toISOString();
       const endDateStr = new Date(dateRange.endDate.setHours(23, 59, 59, 999)).toISOString();
       
       if (activeReportType === 'sales') {
-        await fetchSalesReport(startDateStr, endDateStr);
+        // Özet verileri her zaman tüm aralık için çek (sayfalamadan bağımsız)
+        await fetchSalesSummary(startDateStr, endDateStr);
+        // Satış listesini sayfalama ile çek (ilk sayfa için)
+        await fetchSalesReportPage(startDateStr, endDateStr, 0);
       } else if (activeReportType === 'products') {
         await fetchProductsReport(startDateStr, endDateStr);
       } else if (activeReportType === 'stock') {
@@ -137,6 +167,108 @@ const ReportsScreen = ({ branchId }) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Satış Raporu için ÖZET VERİLERİ Çekme
+  const fetchSalesSummary = async (startDateStr, endDateStr) => {
+    try {
+      const { data: summarySalesData, error: summaryError } = await supabase
+        .from('sales')
+        .select('total_amount')
+        .eq('branch_id', selectedBranchId)
+        .gte('sale_time', startDateStr)
+        .lte('sale_time', endDateStr);
+
+      if (summaryError) throw summaryError;
+
+      if (summarySalesData && summarySalesData.length > 0) {
+        const totalSales = summarySalesData.reduce((sum, sale) => sum + parseFloat(sale.total_amount), 0);
+        const transactionCount = summarySalesData.length; // Bu, toplam işlem sayısı olacak
+        const averageOrder = transactionCount > 0 ? totalSales / transactionCount : 0;
+        
+        setSummaryData({
+          totalSales,
+          transactionCount,
+          averageOrder
+        });
+      } else {
+        setSummaryData({
+          totalSales: 0,
+          transactionCount: 0,
+          averageOrder: 0
+        });
+      }
+    } catch (error) {
+      console.error('Satış özet verileri yüklenirken hata:', error);
+      // Hata durumunda özet verileri sıfırla veya kullanıcıya bilgi ver
+      setSummaryData({
+        totalSales: 0,
+        transactionCount: 0,
+        averageOrder: 0
+      });
+    }
+  };
+
+  // Satış raporu verileri - SAYFALAMA İLE
+  const fetchSalesReportPage = async (startDateStr, endDateStr, page) => {
+    if (page === 0) {
+      setReportData([]); // Yeni bir sorgu başlangıcında (örn: tarih değişimi) eski veriyi temizle
+      setAllSalesLoaded(false);
+    } else {
+      setSalesLoadingMore(true); // Sadece sonraki sayfalar yüklenirken true yap
+    }
+
+    try {
+      const from = page * salesPageSize;
+      const to = from + salesPageSize - 1;
+
+      // Sayfalama ile satış listesini getir
+      const { data: salesData, error: salesError, count } = await supabase
+        .from('sales')
+        .select(`
+          id,
+          sale_time,
+          total_amount,
+          payment_methods (name)
+        `, { count: 'exact' }) // Toplam sayıyı almak için count: 'exact'
+        .eq('branch_id', selectedBranchId)
+        .gte('sale_time', startDateStr)
+        .lte('sale_time', endDateStr)
+        .order('sale_time', { ascending: false })
+        .range(from, to);
+        
+      if (salesError) throw salesError;
+      
+      if (salesData) {
+        setSalesTotalCount(count || 0); // Toplam satış sayısını state'e kaydet
+        setReportData(prevData => page === 0 ? salesData : [...prevData, ...salesData]);
+        setSalesCurrentPage(page);
+        if (salesData.length < salesPageSize || (page + 1) * salesPageSize >= count) {
+          setAllSalesLoaded(true);
+        }
+      } else {
+        if (page === 0) setReportData([]); // Eğer ilk sayfada veri yoksa boşalt
+      }
+      
+    } catch (error) {
+      console.error('Sayfalı satış raporu verileri yüklenirken hata:', error);
+      if (page === 0) setReportData([]); // Hata durumunda ilk sayfayı boşalt
+    } finally {
+      if (page > 0) {
+        setSalesLoadingMore(false); // Sayfa yüklemesi bittiğinde false yap
+      }
+    }
+  };
+
+  // Daha Fazla Satış Yükle
+  const loadMoreSales = () => {
+    if (loading || salesLoadingMore || allSalesLoaded) {
+      return; // Zaten yükleniyorsa veya tümü yüklendiyse bir şey yapma
+    }
+    const nextPage = salesCurrentPage + 1;
+    const startDateStr = dateRange.startDate.toISOString();
+    const endDateStr = new Date(dateRange.endDate.setHours(23, 59, 59, 999)).toISOString();
+    fetchSalesReportPage(startDateStr, endDateStr, nextPage);
   };
 
   // Satış raporu verileri
@@ -196,7 +328,7 @@ const ReportsScreen = ({ branchId }) => {
           sale_items(
             product_id,
             quantity,
-            unit_price,
+            price_at_sale,
             products(name, category_id, categories(name))
           )
         `)
@@ -219,7 +351,7 @@ const ReportsScreen = ({ branchId }) => {
               const productName = item.products?.name || 'Bilinmeyen Ürün';
               const categoryName = item.products?.categories?.name || 'Kategorisiz';
               const quantity = item.quantity || 0;
-              const revenue = (item.unit_price * quantity) || 0;
+              const revenue = (item.price_at_sale * quantity) || 0;
               
               totalQuantity += quantity;
               totalRevenue += revenue;
@@ -270,31 +402,41 @@ const ReportsScreen = ({ branchId }) => {
     try {
       // Stok verilerini getir
       const { data: stockData, error: stockError } = await supabase
-        .from('ingredients')
+        .from('branch_ingredient_stock') // Query branch_ingredient_stock table
         .select(`
-          id,
-          name,
-          unit,
-          stock_quantity,
-          created_at,
-          updated_at
+          stock_level,
+          ingredients (
+            id,
+            name,
+            unit,
+            low_stock_threshold
+          )
         `)
-        .order('name');
+        .eq('branch_id', selectedBranchId) // Filter by selected branch
+        .order('name', { foreignTable: 'ingredients', ascending: true }); // Order by ingredient name correctly
         
       if (stockError) throw stockError;
       
       if (stockData && stockData.length > 0) {
-        // Stok özeti hesapla
-        const lowStockItems = stockData.filter(item => 
-          item.stock_quantity < 10
+        // Transform data to match existing structure and calculate stock summary
+        const transformedData = stockData.map(item => ({
+          id: item.ingredients.id,
+          name: item.ingredients.name,
+          unit: item.ingredients.unit,
+          stock_quantity: item.stock_level,
+          low_stock_threshold: item.ingredients.low_stock_threshold
+        }));
+
+        const lowStockItems = transformedData.filter(item => 
+          item.stock_quantity < (item.low_stock_threshold || 0)
         );
         
         setSummaryData({
-          totalIngredients: stockData.length,
+          totalIngredients: transformedData.length,
           lowStockCount: lowStockItems.length,
         });
         
-        setReportData(stockData);
+        setReportData(transformedData);
       } else {
         setSummaryData({
           totalIngredients: 0,
@@ -350,17 +492,15 @@ const ReportsScreen = ({ branchId }) => {
         <Text style={[styles.tableCell, { flex: 0.5 }]}>{index + 1}</Text>
         <Text style={[styles.tableCell, { flex: 1.5 }]}>{item.name}</Text>
         <Text style={[styles.tableCell, { flex: 0.7 }]}>{item.unit}</Text>
-        <View style={[styles.tableCell, { flex: 1 }]}>
+        <View style={[styles.tableCell, { flex: 0.8 }]}>
           <View style={[
             styles.stockIndicator, 
-            { backgroundColor: item.stock_quantity < 10 ? '#f44336' : (item.stock_quantity < 20 ? '#ff9800' : '#4caf50') }
+            { backgroundColor: item.stock_quantity < (item.low_stock_threshold || 0) ? '#f44336' : (item.stock_quantity < (item.low_stock_threshold || 0) * 1.5 ? '#ff9800' : '#4caf50') }
           ]}>
             <Text style={styles.stockText}>{item.stock_quantity}</Text>
           </View>
         </View>
-        <Text style={[styles.tableCell, { flex: 1.2 }]}>
-          {new Date(item.updated_at).toLocaleDateString('tr-TR')}
-        </Text>
+        <Text style={[styles.tableCell, { flex: 0.8, textAlign: 'center' }]}>{item.low_stock_threshold || 0}</Text>
       </View>
     );
   };
@@ -393,10 +533,20 @@ const ReportsScreen = ({ branchId }) => {
       <Text style={[styles.tableHeaderCell, { flex: 0.5 }]}>#</Text>
       <Text style={[styles.tableHeaderCell, { flex: 1.5 }]}>Malzeme</Text>
       <Text style={[styles.tableHeaderCell, { flex: 0.7 }]}>Birim</Text>
-      <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Stok</Text>
-      <Text style={[styles.tableHeaderCell, { flex: 1.2 }]}>Son Güncelleme</Text>
+      <Text style={[styles.tableHeaderCell, { flex: 0.8 }]}>Stok</Text>
+      <Text style={[styles.tableHeaderCell, { flex: 0.8, textAlign: 'center' }]}>Min. Stok</Text>
     </View>
   );
+
+  // Satışlar listesi için footer (daha fazla yükleniyor göstergesi)
+  const renderSalesListFooter = () => {
+    if (!salesLoadingMore) return null;
+    return (
+      <View style={{ paddingVertical: 20 }}>
+        <ActivityIndicator size="large" color="#1e3a8a" />
+      </View>
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -417,7 +567,7 @@ const ReportsScreen = ({ branchId }) => {
               style={styles.reportTypeIcon}
             />
             <Text style={[styles.reportTypeText, activeReportType === 'sales' && styles.activeReportTypeText]}>
-              Satış Raporu
+              Satış
             </Text>
           </TouchableOpacity>
           
@@ -432,7 +582,7 @@ const ReportsScreen = ({ branchId }) => {
               style={styles.reportTypeIcon}
             />
             <Text style={[styles.reportTypeText, activeReportType === 'products' && styles.activeReportTypeText]}>
-              Ürün Raporu
+              Ürün
             </Text>
           </TouchableOpacity>
           
@@ -447,7 +597,7 @@ const ReportsScreen = ({ branchId }) => {
               style={styles.reportTypeIcon}
             />
             <Text style={[styles.reportTypeText, activeReportType === 'stock' && styles.activeReportTypeText]}>
-              Stok Raporu
+              Stok
             </Text>
           </TouchableOpacity>
         </View>
@@ -474,35 +624,11 @@ const ReportsScreen = ({ branchId }) => {
             </TouchableOpacity>
           </View>
           
-          <View style={styles.branchContainer}>
-            <Text style={styles.filterLabel}>Şube:</Text>
-            <View style={styles.branchSelector}>
-              {branches.map(branch => (
-                <TouchableOpacity
-                  key={branch.id}
-                  style={[
-                    styles.branchButton,
-                    selectedBranchId === branch.id && styles.activeBranchButton
-                  ]}
-                  onPress={() => setSelectedBranchId(branch.id)}
-                >
-                  <Text style={[
-                    styles.branchButtonText,
-                    selectedBranchId === branch.id && styles.activeBranchButtonText
-                  ]}>
-                    {branch.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-          
           <TouchableOpacity 
             style={styles.refreshButton}
             onPress={fetchReportData}
           >
             <Ionicons name="refresh" size={18} color="#fff" />
-            <Text style={styles.refreshButtonText}>Yenile</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -591,6 +717,12 @@ const ReportsScreen = ({ branchId }) => {
                   data={reportData}
                   renderItem={renderSalesItem}
                   keyExtractor={(item) => item.id.toString()}
+                  ListHeaderComponent={renderSalesTableHeader}
+                  showsVerticalScrollIndicator={false}
+                  // Satışlar raporu için sayfalama özellikleri
+                  onEndReached={loadMoreSales}
+                  onEndReachedThreshold={0.5}
+                  ListFooterComponent={renderSalesListFooter}
                 />
               </>
             )}
@@ -634,13 +766,28 @@ const ReportsScreen = ({ branchId }) => {
                 {datePickerMode === 'start' ? 'Başlangıç Tarihi' : 'Bitiş Tarihi'}
               </Text>
               
-              <TextInput
+              {/* <TextInput
                 style={styles.dateInput}
                 value={tempDate}
                 onChangeText={setTempDate}
                 placeholder="GG/AA/YYYY"
                 keyboardType="number-pad"
                 maxLength={10}
+              /> */}
+
+              <Calendar
+                current={formatDate(datePickerMode === 'start' ? dateRange.startDate : dateRange.endDate, 'YYYY-MM-DD')}
+                onDayPress={onDayPress}
+                markedDates={{
+                  [formatDate(datePickerMode === 'start' ? dateRange.startDate : dateRange.endDate, 'YYYY-MM-DD')]: {selected: true, marked: true, selectedColor: '#1e3a8a'}
+                }}
+                monthFormat={'yyyy MMMM'}
+                // theme={{
+                //   selectedDayBackgroundColor: '#1e3a8a',
+                //   arrowColor: '#1e3a8a',
+                //   todayTextColor: '#1e3a8a',
+                //   // Diğer tema ayarları eklenebilir
+                // }}
               />
               
               <View style={styles.modalButtonContainer}>
@@ -651,12 +798,12 @@ const ReportsScreen = ({ branchId }) => {
                   <Text style={styles.datePickerButtonText}>İptal</Text>
                 </TouchableOpacity>
                 
-                <TouchableOpacity 
+                {/* <TouchableOpacity 
                   style={styles.datePickerButton}
-                  onPress={handleDateChange}
+                  onPress={handleDateChange} // This button might not be needed if selection happens onDayPress
                 >
                   <Text style={styles.datePickerButtonText}>Tamam</Text>
-                </TouchableOpacity>
+                </TouchableOpacity> */}
               </View>
             </View>
           </View>
@@ -747,32 +894,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#333',
   },
-  branchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 2,
-  },
-  branchSelector: {
-    flexDirection: 'row',
-    flex: 1,
-  },
-  branchButton: {
-    backgroundColor: '#f0f0f0',
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    marginRight: 5,
-    borderRadius: 5,
-  },
-  activeBranchButton: {
-    backgroundColor: '#1e3a8a',
-  },
-  branchButtonText: {
-    fontSize: 14,
-    color: '#333',
-  },
-  activeBranchButtonText: {
-    color: '#fff',
-  },
   refreshButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -780,11 +901,6 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     paddingVertical: 8,
     paddingHorizontal: 15,
-  },
-  refreshButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    marginLeft: 5,
   },
   summaryContainer: {
     flexDirection: 'row',
@@ -892,7 +1008,7 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     color: '#333',
   },
-  dateInput: {
+  /* dateInput: { // No longer needed
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 5,
@@ -900,7 +1016,7 @@ const styles = StyleSheet.create({
     width: '100%',
     fontSize: 16,
     textAlign: 'center',
-  },
+  }, */
   modalButtonContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',

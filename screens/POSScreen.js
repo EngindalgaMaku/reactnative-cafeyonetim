@@ -370,16 +370,41 @@ const POSScreen = ({ branchId }) => {
         
         const paymentMethodId = paymentMethodData?.id || 1;
         
+        let cashierName = 'Sistem'; // Varsayılan Kasiyer Adı
+        if (user.id) {
+          try {
+            const { data: profile, error: profileError } = await supabase
+              .from('profiles')
+              .select('full_name') // 'full_name' veya kullanıcı adını içeren alan
+              .eq('id', user.id)
+              .single();
+
+            if (profile && profile.full_name) {
+              cashierName = profile.full_name;
+            } else if (user.email) {
+              // Profil adı yoksa e-postayı kullan (isteğe bağlı)
+              cashierName = user.email.split('@')[0]; 
+            }
+          } catch (e) {
+            console.error("Profil alınırken hata:", e);
+          }
+        }
+
+        console.log("Saving sale with cashierName:", cashierName); // Added for debugging
+
+        const saleData = {
+          branch_id: branchId || 1, // Varsayılan şube ID'si
+          user_id: user.id, // Corrected from profile_id, assumes sales.user_id links to auth.users.id
+          payment_method_id: paymentMethodId,
+          total_amount: getCartTotal(),
+          sale_time: new Date().toISOString()
+          // cashier_name field removed as it doesn't exist in the sales table
+        };
+        
         // Sipariş kaydını oluştur (sales tablosuna)
-        const { data: saleData, error: saleError } = await supabase
+        const { data: saleDataResult, error: saleError } = await supabase
           .from('sales')
-          .insert({
-            branch_id: branchId,
-            profile_id: profile.id,
-            payment_method_id: paymentMethodId,
-            total_amount: getCartTotal(),
-            sale_time: new Date().toISOString()
-          })
+          .insert(saleData)
           .select()
           .single();
           
@@ -387,7 +412,7 @@ const POSScreen = ({ branchId }) => {
           throw new Error(`Sipariş oluşturulamadı: ${saleError.message}`);
         }
         
-        const saleId = saleData.id;
+        const saleId = saleDataResult.id;
         
         // 5. Sipariş detaylarını oluştur (sale_items tablosuna)
         const saleItems = cart.map(item => ({

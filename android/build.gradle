@@ -1,14 +1,26 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
+ext {
+  buildToolsVersion = "34.0.0"
+  minSdkVersion = 24
+  compileSdkVersion = 34
+  targetSdkVersion = 34
+  ndkVersion = "25.2.9519653"
+  kotlinVersion = "1.8.20" // Or a version compatible with AGP 8.2.2
+}
+
 buildscript {
+  ext {
+    kotlinVersion = "1.8.20" // Define kotlinVersion for buildscript scope
+  }
   repositories {
     google()
     mavenCentral()
   }
   dependencies {
-    classpath('com.android.tools.build:gradle')
-    classpath('com.facebook.react:react-native-gradle-plugin')
-    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+    classpath("com.android.tools.build:gradle:8.2.2") // Downgraded AGP
+    classpath("com.facebook.react:react-native-gradle-plugin")
+    classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
   }
 }
 

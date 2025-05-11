@@ -7,7 +7,8 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { supabase } from './supabaseClient';
 import LoginScreen from './screens/LoginScreen'; // We will create this
 import DashboardScreen from './screens/DashboardScreen'; // We will create this
-import { ActivityIndicator, View, StyleSheet } from 'react-native';
+import { ActivityIndicator, View, StyleSheet, SafeAreaView } from 'react-native';
+import Footer from './components/Footer';
 
 const Stack = createStackNavigator();
 
@@ -60,23 +61,28 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator>
-        {session && session.user ? (
-          <Stack.Screen 
-            name="Dashboard" 
-            component={DashboardScreen} 
-            options={{ headerShown: false }}
-          />
-        ) : (
-          <Stack.Screen 
-            name="Login" 
-            component={LoginScreen} 
-            options={{ headerShown: false }} 
-          />
-        )}
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.appContainer}>
+        <NavigationContainer>
+          <Stack.Navigator>
+            {session && session.user ? (
+              <Stack.Screen 
+                name="Dashboard" 
+                component={DashboardScreen} 
+                options={{ headerShown: false }}
+              />
+            ) : (
+              <Stack.Screen 
+                name="Login" 
+                component={LoginScreen} 
+                options={{ headerShown: false }} 
+              />
+            )}
+          </Stack.Navigator>
+        </NavigationContainer>
+      </View>
+      <Footer />
+    </SafeAreaView>
   );
 }
 
@@ -86,5 +92,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#f5f5f5',
+  },
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  appContainer: {
+    flex: 1,
   },
 }); 

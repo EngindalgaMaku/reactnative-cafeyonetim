@@ -34,7 +34,6 @@ const PaymentsScreen = () => {
     name: '',
     description: '',
     is_active: true,
-    payment_type: 'cash', // 'cash', 'card', 'online', 'other'
   });
 
   const flatListRef = useRef(null);
@@ -89,7 +88,6 @@ const PaymentsScreen = () => {
       name: '',
       description: '',
       is_active: true,
-      payment_type: 'cash',
     });
   };
 
@@ -100,7 +98,6 @@ const PaymentsScreen = () => {
       name: item.name || '',
       description: item.description || '',
       is_active: item.is_active !== false,
-      payment_type: item.payment_type || 'cash',
     });
     setFormMode('edit');
     setModalVisible(true);
@@ -121,7 +118,6 @@ const PaymentsScreen = () => {
         name: formData.name.trim(),
         description: formData.description.trim(),
         is_active: formData.is_active,
-        payment_type: formData.payment_type,
       };
 
       if (formMode === 'add') {
@@ -246,30 +242,11 @@ const PaymentsScreen = () => {
     }
   };
 
-  // Ödeme tipi için okunabilir isim döndür
-  const getPaymentTypeLabel = (type) => {
-    switch (type) {
-      case 'cash':
-        return 'Nakit';
-      case 'card':
-        return 'Kredi/Banka Kartı';
-      case 'online':
-        return 'Online Ödeme';
-      case 'other':
-        return 'Diğer';
-      default:
-        return type;
-    }
-  };
-
   // Ödeme yöntemi satırı render fonksiyonu
   const renderPaymentMethodItem = ({ item }) => (
     <View style={styles.tableRow}>
       <View style={styles.tableCell}>
         <Text style={styles.cellText}>{item.name}</Text>
-      </View>
-      <View style={styles.tableCell}>
-        <Text style={styles.cellText}>{getPaymentTypeLabel(item.payment_type)}</Text>
       </View>
       <View style={styles.tableCell}>
         <View style={[
@@ -313,9 +290,6 @@ const PaymentsScreen = () => {
     <View style={styles.tableHeader}>
       <View style={styles.tableHeaderCell}>
         <Text style={styles.tableHeaderText}>Ödeme Yöntemi</Text>
-      </View>
-      <View style={styles.tableHeaderCell}>
-        <Text style={styles.tableHeaderText}>Tip</Text>
       </View>
       <View style={styles.tableHeaderCell}>
         <Text style={styles.tableHeaderText}>Durum</Text>
@@ -456,67 +430,6 @@ const PaymentsScreen = () => {
                   placeholder="Açıklama girin"
                   multiline
                 />
-              </View>
-              
-              <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Ödeme Tipi</Text>
-                <View style={styles.radioGroup}>
-                  <TouchableOpacity 
-                    style={[
-                      styles.radioButton, 
-                      formData.payment_type === 'cash' && styles.radioButtonSelected
-                    ]}
-                    onPress={() => setFormData({...formData, payment_type: 'cash'})}
-                  >
-                    <View style={[
-                      styles.radioCircle, 
-                      formData.payment_type === 'cash' && styles.radioCircleSelected
-                    ]} />
-                    <Text style={styles.radioLabel}>Nakit</Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={[
-                      styles.radioButton, 
-                      formData.payment_type === 'card' && styles.radioButtonSelected
-                    ]}
-                    onPress={() => setFormData({...formData, payment_type: 'card'})}
-                  >
-                    <View style={[
-                      styles.radioCircle, 
-                      formData.payment_type === 'card' && styles.radioCircleSelected
-                    ]} />
-                    <Text style={styles.radioLabel}>Kart</Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={[
-                      styles.radioButton, 
-                      formData.payment_type === 'online' && styles.radioButtonSelected
-                    ]}
-                    onPress={() => setFormData({...formData, payment_type: 'online'})}
-                  >
-                    <View style={[
-                      styles.radioCircle, 
-                      formData.payment_type === 'online' && styles.radioCircleSelected
-                    ]} />
-                    <Text style={styles.radioLabel}>Online</Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={[
-                      styles.radioButton, 
-                      formData.payment_type === 'other' && styles.radioButtonSelected
-                    ]}
-                    onPress={() => setFormData({...formData, payment_type: 'other'})}
-                  >
-                    <View style={[
-                      styles.radioCircle, 
-                      formData.payment_type === 'other' && styles.radioCircleSelected
-                    ]} />
-                    <Text style={styles.radioLabel}>Diğer</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
               
               <View style={styles.formGroup}>
@@ -763,44 +676,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     paddingVertical: 10,
     fontSize: 16,
-  },
-  radioGroup: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 5,
-    flexWrap: 'wrap',
-  },
-  radioButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 8,
-    borderRadius: 5,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    marginBottom: 5,
-    width: '48%',
-  },
-  radioButtonSelected: {
-    borderColor: '#1e3a8a',
-    backgroundColor: '#f0f4ff',
-  },
-  radioCircle: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 1,
-    borderColor: '#777',
-    marginRight: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  radioCircleSelected: {
-    borderColor: '#1e3a8a',
-    borderWidth: 6,
-  },
-  radioLabel: {
-    fontSize: 14,
-    color: '#333',
   },
   switchContainer: {
     flexDirection: 'row',

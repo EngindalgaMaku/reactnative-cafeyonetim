@@ -27,12 +27,6 @@ const IngredientsScreen = ({ branchId }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterApplied, setFilterApplied] = useState(false);
   
-  // Pagination state
-  const [currentPage, setCurrentPage] = useState(0);
-  const [pageSize, setPageSize] = useState(10);
-  const [totalCount, setTotalCount] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
-
   // Form state
   const [formData, setFormData] = useState({
     id: null,
@@ -46,64 +40,57 @@ const IngredientsScreen = ({ branchId }) => {
 
   // Malzemeleri getir
   const fetchIngredients = async () => {
+    if (!branchId) { // If no branchId is provided, don't fetch or show a message
+      setIngredients([]);
+      setLoading(false);
+      setRefreshing(false);
+      // Optionally, show an alert or message to select a branch
+      // Alert.alert("Uyarı", "Lütfen bir şube seçin.");
+      return;
+    }
+
     try {
       setLoading(true);
       
-      // Toplam malzeme sayısını almak için sorgu
-      const { count, error: countError } = await supabase
-        .from('ingredients')
-        .select('*', { count: 'exact', head: true });
-        
-      if (countError) throw countError;
-      
-      // Toplam sayfa sayısını hesapla
-      setTotalCount(count);
-      setTotalPages(Math.ceil(count / pageSize));
-      
-      // Malzemeleri getir
       let query = supabase
         .from('ingredients')
-        .select(`
-          id,
-          name,
-          unit,
-          stock_quantity,
-          low_stock_threshold,
-          created_at,
-          updated_at
-        `);
-        
-      // Arama filtresi
-      if (searchQuery) {
-        query = query.ilike('name', `%${searchQuery}%`);
-      }
+        .select('*') // id, name, unit, stock_quantity, low_stock_threshold, created_at, updated_at
+        .order('name'); // Alfabetik sırala
+
+      // branchId'ye göre filtreleme, eğer Ingredients tablosunda branch_id varsa.
+      // Mevcut şemada ingredients tablosunda doğrudan branch_id görünmüyor.
+      // Eğer şube bazlı malzeme yönetimi varsa, bu sorgu veya tablo yapısı gözden geçirilmeli.
+      // Şimdilik tüm malzemeleri çekiyoruz.
+      // if (branchId) {
+      //   query = query.eq('branch_id', branchId); 
+      // }
       
-      // Sayfalama
-      const from = currentPage * pageSize;
-      const to = from + pageSize - 1;
-      
-      const { data, error } = await query
-        .range(from, to)
-        .order('name');
-      
+      const { data, error, count } = await query; // `count` artık doğrudan kullanılmayacak
+
       if (error) throw error;
       
-      console.log(`${data.length} malzeme yüklendi.`);
-      setIngredients(data || []);
-      
+      if (data) {
+        setIngredients(data);
+        // setTotalCount(count || 0); // Kaldırıldı
+      }
     } catch (error) {
-      console.error('Malzeme verisi çekilirken hata:', error);
+      console.error('Malzemeler alınırken hata:', error);
       Alert.alert('Hata', 'Malzemeler yüklenirken bir sorun oluştu.');
     } finally {
       setLoading(false);
-      setRefreshing(false);
+      // setLoadingMore(false); // Kaldırıldı
     }
   };
 
-  // Sayfa değiştiğinde veya filtre uygulandığında malzemeleri tekrar getir
+  // Sayfa değiştiğinde, pageSize veya arama sorgusu değiştiğinde veya branchId değiştiğinde malzemeleri tekrar getir
   useEffect(() => {
-    fetchIngredients();
-  }, [currentPage, pageSize, searchQuery]);
+    if (branchId) { // Only fetch if branchId is available
+      fetchIngredients();
+    } else {
+      setIngredients([]); // Clear ingredients if no branch is selected
+      setLoading(false);
+    }
+  }, [branchId]);
 
   // Sayfayı yenile
   const onRefresh = () => {
@@ -128,7 +115,7 @@ const IngredientsScreen = ({ branchId }) => {
       id: item.id,
       name: item.name,
       unit: item.unit,
-      stock_level: item.stock_level.toString(),
+      stock_level: item.stock_quantity.toString(),
       low_stock_threshold: item.low_stock_threshold.toString()
     });
     setFormMode('edit');
@@ -245,85 +232,43 @@ const IngredientsScreen = ({ branchId }) => {
     );
   };
 
-  // Sayfalama fonksiyonları
-  const goToPage = (page) => {
-    if (page >= 0 && page < totalPages) {
-      setCurrentPage(page);
-      if (flatListRef.current) {
-        flatListRef.current.scrollToOffset({ offset: 0, animated: true });
-      }
-    }
-  };
-
-  const goToPreviousPage = () => {
-    goToPage(currentPage - 1);
-  };
-
-  const goToNextPage = () => {
-    goToPage(currentPage + 1);
-  };
-
-  // Tarih formatı
-  const formatDate = (dateString) => {
-    if (!dateString) return '---';
-    try {
-      const date = new Date(dateString);
-      
-      // Gün, ay ve yıl
-      const day = date.getDate().toString().padStart(2, '0');
-      const month = (date.getMonth() + 1).toString().padStart(2, '0');
-      const year = date.getFullYear();
-      
-      // Saat ve dakika
-      const hours = date.getHours().toString().padStart(2, '0');
-      const minutes = date.getMinutes().toString().padStart(2, '0');
-      
-      // Türkçe ay adı için basit bir dönüşüm
-      const monthNames = [
-        'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
-        'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'
-      ];
-      
-      return `${day} ${monthNames[date.getMonth()]} ${year} ${hours}:${minutes}`;
-    } catch (error) {
-      return dateString;
-    }
-  };
-
   // Malzeme satırı render fonksiyonu
-  const renderIngredientItem = ({ item }) => (
-    <View style={styles.tableRow}>
-      <View style={styles.tableCell}>
-        <Text style={styles.cellText}>{item.name}</Text>
-      </View>
-      <View style={[styles.tableCell, { flex: 0.6 }]}>
-        <Text style={styles.cellText}>{item.unit}</Text>
-      </View>
-      <View style={[styles.tableCell, { flex: 0.6 }]}>
-        <Text style={styles.cellText}>{item.stock_quantity}</Text>
-      </View>
-      <View style={[styles.tableCell, { flex: 0.7 }]}>
-        <Text style={styles.cellText}>{item.low_stock_threshold}</Text>
-      </View>
-      <View style={[styles.tableCell, { flex: 0.6, justifyContent: 'center' }]}>
-        <View style={styles.actionButtons}>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.editButton]}
-            onPress={() => startEdit(item)}
-          >
-            <MaterialIcons name="edit" size={20} color="#fff" />
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[styles.actionButton, styles.deleteButton]}
-            onPress={() => handleDeleteIngredient(item)}
-          >
-            <MaterialIcons name="delete" size={20} color="#fff" />
-          </TouchableOpacity>
+  const renderIngredientItem = ({ item }) => {
+    const isLowStock = item.stock_quantity !== null && item.low_stock_threshold !== null && item.stock_quantity < item.low_stock_threshold;
+    return (
+      <View style={styles.tableRow}>
+        <View style={styles.tableCell}>
+          <Text style={styles.cellText}>{item.name}</Text>
+        </View>
+        <View style={[styles.tableCell, { flex: 0.6 }]}>
+          <Text style={styles.cellText}>{item.unit}</Text>
+        </View>
+        <View style={[styles.tableCell, { flex: 0.6 }]}>
+          <Text style={styles.cellText}>{item.stock_quantity}</Text>
+        </View>
+        <View style={[styles.tableCell, { flex: 0.7 }]}>
+          <Text style={styles.cellText}>{item.low_stock_threshold}</Text>
+        </View>
+        <View style={[styles.tableCell, { flex: 0.6, justifyContent: 'center' }]}>
+          <View style={styles.actionButtons}>
+            <TouchableOpacity
+              style={[styles.actionButton, styles.editButton]}
+              onPress={() => startEdit(item)}
+            >
+              <MaterialIcons name="edit" size={20} color="#fff" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.actionButton, styles.deleteButton]}
+              onPress={() => handleDeleteIngredient(item)}
+            >
+              <MaterialIcons name="delete" size={20} color="#fff" />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
-    </View>
-  );
+    );
+  };
 
   // Tablo başlığı render fonksiyonu
   const renderTableHeader = () => (
@@ -346,70 +291,6 @@ const IngredientsScreen = ({ branchId }) => {
     </View>
   );
 
-  // Sayfalama kontrollerini render et
-  const renderPaginationControls = () => (
-    <View style={styles.paginationContainer}>
-      <View style={styles.paginationInfo}>
-        <Text style={styles.paginationText}>
-          Toplam {totalCount} malzeme 
-        </Text>
-      </View>
-      <View style={styles.pageControls}>
-        <TouchableOpacity 
-          style={[styles.pageButton, currentPage === 0 && styles.disabledButton]}
-          onPress={goToPreviousPage}
-          disabled={currentPage === 0}
-        >
-          <MaterialIcons name="chevron-left" size={24} color={currentPage === 0 ? "#999" : "#fff"} />
-        </TouchableOpacity>
-        
-        <View style={styles.pageIndicator}>
-          <Text style={styles.pageIndicatorText}>
-            Sayfa {currentPage + 1} / {totalPages}
-          </Text>
-        </View>
-        
-        <TouchableOpacity 
-          style={[styles.pageButton, currentPage === totalPages - 1 && styles.disabledButton]}
-          onPress={goToNextPage}
-          disabled={currentPage === totalPages - 1}
-        >
-          <MaterialIcons name="chevron-right" size={24} color={currentPage === totalPages - 1 ? "#999" : "#fff"} />
-        </TouchableOpacity>
-      </View>
-      <View style={styles.pageSizeSelector}>
-        <Text style={styles.pageSizeLabel}>Sayfa Başına:</Text>
-        <TouchableOpacity
-          style={[styles.pageSizeButton, pageSize === 10 && styles.activePageSizeButton]}
-          onPress={() => {
-            setPageSize(10);
-            setCurrentPage(0);
-          }}
-        >
-          <Text style={[styles.pageSizeButtonText, pageSize === 10 && styles.activePageSizeButtonText]}>10</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.pageSizeButton, pageSize === 20 && styles.activePageSizeButton]}
-          onPress={() => {
-            setPageSize(20);
-            setCurrentPage(0);
-          }}
-        >
-          <Text style={[styles.pageSizeButtonText, pageSize === 20 && styles.activePageSizeButtonText]}>20</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.pageSizeButton, pageSize === 50 && styles.activePageSizeButton]}
-          onPress={() => {
-            setPageSize(50);
-            setCurrentPage(0);
-          }}
-        >
-          <Text style={[styles.pageSizeButtonText, pageSize === 50 && styles.activePageSizeButtonText]}>50</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -423,7 +304,6 @@ const IngredientsScreen = ({ branchId }) => {
               value={searchQuery}
               onChangeText={(text) => {
                 setSearchQuery(text);
-                setCurrentPage(0);
                 setFilterApplied(!!text);
               }}
             />
@@ -433,7 +313,6 @@ const IngredientsScreen = ({ branchId }) => {
                 onPress={() => {
                   setSearchQuery('');
                   setFilterApplied(false);
-                  setCurrentPage(0);
                 }}
               >
                 <Ionicons name="close-circle" size={20} color="#666" />
@@ -502,9 +381,6 @@ const IngredientsScreen = ({ branchId }) => {
               />
             )}
           </View>
-          
-          {/* Sayfalama Kontrolleri */}
-          {ingredients.length > 0 && renderPaginationControls()}
         </>
       )}
 
@@ -853,74 +729,6 @@ const styles = StyleSheet.create({
   },
   saveButtonText: {
     color: '#fff',
-    fontWeight: 'bold',
-  },
-  paginationContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#1e3a8a',
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    borderRadius: 5,
-    margin: 10,
-  },
-  paginationInfo: {
-    flex: 1,
-  },
-  paginationText: {
-    color: '#fff',
-    fontSize: 14,
-  },
-  pageControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-  },
-  pageButton: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 20,
-  },
-  disabledButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  pageIndicator: {
-    paddingHorizontal: 15,
-  },
-  pageIndicatorText: {
-    color: '#fff',
-    fontSize: 14,
-  },
-  pageSizeSelector: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  pageSizeLabel: {
-    color: '#fff',
-    marginRight: 10,
-  },
-  pageSizeButton: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    marginLeft: 5,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 3,
-  },
-  activePageSizeButton: {
-    backgroundColor: '#fff',
-  },
-  pageSizeButtonText: {
-    color: '#fff',
-  },
-  activePageSizeButtonText: {
-    color: '#1e3a8a',
     fontWeight: 'bold',
   },
 });

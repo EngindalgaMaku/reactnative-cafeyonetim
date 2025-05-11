@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Image, SafeAreaView, Dimensions, Animated, ActivityIndicator, Platform } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Image, SafeAreaView, Dimensions, Animated, ActivityIndicator, Platform, RefreshControl } from 'react-native';
 import { supabase } from '../supabaseClient';
 import { Ionicons, MaterialIcons, FontAwesome, MaterialCommunityIcons } from '@expo/vector-icons';
 import POSScreen from './POSScreen';
@@ -12,6 +12,7 @@ import UsersScreen from './UsersScreen';
 import PaymentsScreen from './PaymentsScreen';
 import ReportsScreen from './ReportsScreen';
 import ProfileScreen from './ProfileScreen';
+import { useFocusEffect } from '@react-navigation/native';
 
 const { width, height } = Dimensions.get('window');
 const isMobile = width < 768;
@@ -34,12 +35,14 @@ export default function DashboardScreen({ navigation }) {
   // Veri state'leri
   const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [salesData, setSalesData] = useState({
     dailySales: 0,
     weeklySales: 0,
     monthlySales: 0,
     totalProducts: 0,
     hourlyTransactions: 0,
+    hourlySalesAmount: 0,
     dailyTransactions: 0,
     weeklyTransactions: 0,
     monthlyTransactions: 0
@@ -175,280 +178,302 @@ export default function DashboardScreen({ navigation }) {
     fetchBranches();
   }, []);
 
-  // Seçili şubeye göre satış verilerini getir
-  useEffect(() => {
-    if (!selectedBranchId) return;
+  const fetchDashboardData = useCallback(async () => {
+    if (!selectedBranchId) {
+      setLoading(false);
+      setRefreshing(false);
+      // Clear data if no branch is selected
+      setSalesData({
+        dailySales: 0,
+        weeklySales: 0,
+        monthlySales: 0,
+        totalProducts: 0,
+        hourlyTransactions: 0,
+        hourlySalesAmount: 0,
+        dailyTransactions: 0,
+        weeklyTransactions: 0,
+        monthlyTransactions: 0
+      });
+      setTopProducts([]);
+      setLowStockItems([]);
+      setSalesChartData({
+        labels: ["", "", "", "", "", "", ""],
+        datasets: [ { data: [0, 0, 0, 0, 0, 0, 0] } ]
+      });
+      return;
+    }
 
-    async function fetchSalesData() {
-      setLoading(true);
+    // setLoading(true); // setLoading will be handled by onRefresh or initial load
+    
+    try {
+      // Gerçek verileri Supabase'den çekelim
+      const today = new Date();
+      const startOfDay = new Date(today);
+      startOfDay.setHours(0, 0, 0, 0);
+      
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - (today.getDay() || 7) + 1); // Pazartesiden başla
+      startOfWeek.setHours(0, 0, 0, 0);
+      
+      const startOfMonth = new Date(today);
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+      
+      let dailySalesTotal = 0;
+      let weeklySalesTotal = 0;
+      let monthlySalesTotal = 0;
+      let dailyTransactions = 0;
+      let weeklyTransactions = 0;
+      let monthlyTransactions = 0;
+      let hourlyTransactions = 0;
+      let hourlySalesTotal = 0;
       
       try {
-        // Gerçek verileri Supabase'den çekelim
-        const today = new Date();
-        const startOfDay = new Date(today);
-        startOfDay.setHours(0, 0, 0, 0);
+        // Günlük satışları getir
+        const { data: dailySalesData, error: dailyError } = await supabase
+          .from('sales')
+          .select('total_amount')
+          .eq('branch_id', selectedBranchId)
+          .gte('sale_time', startOfDay.toISOString());
         
-        const startOfWeek = new Date(today);
-        startOfWeek.setDate(today.getDate() - (today.getDay() || 7) + 1); // Pazartesiden başla
-        startOfWeek.setHours(0, 0, 0, 0);
-        
-        const startOfMonth = new Date(today);
-        startOfMonth.setDate(1);
-        startOfMonth.setHours(0, 0, 0, 0);
-        
-        let dailySalesTotal = 0;
-        let weeklySalesTotal = 0;
-        let monthlySalesTotal = 0;
-        let dailyTransactions = 0;
-        let weeklyTransactions = 0;
-        let monthlyTransactions = 0;
-        let hourlyTransactions = 0;
-        
-        try {
-          // Son 1 saatin satışları
-          const oneHourAgo = new Date(today);
-          oneHourAgo.setHours(today.getHours() - 1);
-          
-          const { data: hourlyData, error: hourlyError } = await supabase
-            .from('sales')
-            .select('total_amount')
-            .eq('branch_id', selectedBranchId)
-            .gte('sale_time', oneHourAgo.toISOString());
-            
-          if (!hourlyError && hourlyData) {
-            hourlyTransactions = hourlyData.length;
-            console.log(`Son 1 saat satışları: ${hourlyTransactions} işlem bulundu`);
-          }
-          
-          // Günlük satışları getir
-          const { data: dailySalesData, error: dailyError } = await supabase
-            .from('sales')
-            .select('total_amount')
-            .eq('branch_id', selectedBranchId)
-            .gte('sale_time', startOfDay.toISOString());
-          
-          if (!dailyError && dailySalesData) {
-            dailyTransactions = dailySalesData.length;
-            dailySalesTotal = dailySalesData.reduce((sum, item) => sum + (parseFloat(item.total_amount) || 0), 0);
-            console.log(`Günlük satış: ${dailySalesTotal} TL, ${dailyTransactions} işlem`);
-          }
-          
-          // Haftalık satışları getir
-          const { data: weeklySalesData, error: weeklyError } = await supabase
-            .from('sales')
-            .select('total_amount')
-            .eq('branch_id', selectedBranchId)
-            .gte('sale_time', startOfWeek.toISOString());
-          
-          if (!weeklyError && weeklySalesData) {
-            weeklyTransactions = weeklySalesData.length;
-            weeklySalesTotal = weeklySalesData.reduce((sum, item) => sum + (parseFloat(item.total_amount) || 0), 0);
-            console.log(`Haftalık satış: ${weeklySalesTotal} TL, ${weeklyTransactions} işlem`);
-          }
-          
-          // Aylık satışları getir
-          const { data: monthlySalesData, error: monthlyError } = await supabase
-            .from('sales')
-            .select('total_amount')
-            .eq('branch_id', selectedBranchId)
-            .gte('sale_time', startOfMonth.toISOString());
-          
-          if (!monthlyError && monthlySalesData) {
-            monthlyTransactions = monthlySalesData.length;
-            monthlySalesTotal = monthlySalesData.reduce((sum, item) => sum + (parseFloat(item.total_amount) || 0), 0);
-            console.log(`Aylık satış: ${monthlySalesTotal} TL, ${monthlyTransactions} işlem`);
-          }
-        } catch (dataError) {
-          console.error('Satış verileri çekilirken hata:', dataError);
+        if (!dailyError && dailySalesData) {
+          dailyTransactions = dailySalesData.length;
+          dailySalesTotal = dailySalesData.reduce((sum, item) => sum + (parseFloat(item.total_amount) || 0), 0);
+          console.log(`Günlük satış: ${dailySalesTotal} TL, ${dailyTransactions} işlem`);
         }
         
-        // Verileri state'e kaydet
-        setSalesData({
-          dailySales: dailySalesTotal,
-          weeklySales: weeklySalesTotal,
-          monthlySales: monthlySalesTotal,
-          totalProducts: 0, // Ürün sayısı ayrı olarak çekilecek
-          hourlyTransactions: hourlyTransactions,
-          dailyTransactions: dailyTransactions,
-          weeklyTransactions: weeklyTransactions,
-          monthlyTransactions: monthlyTransactions
-        });
+        // Haftalık satışları getir
+        const { data: weeklySalesData, error: weeklyError } = await supabase
+          .from('sales')
+          .select('total_amount')
+          .eq('branch_id', selectedBranchId)
+          .gte('sale_time', startOfWeek.toISOString());
         
-        // Toplam ürün sayısını getir
-        let totalProducts = 0;
-        try {
-          const { data: productsData, error: productsError } = await supabase
-            .from('products')
-            .select('id', { count: 'exact' });
-            
-          if (!productsError) {
-            totalProducts = productsData.length;
-            // Ürün sayısını güncelle
-            setSalesData(prev => ({ ...prev, totalProducts }));
-          }
-        } catch (productsError) {
-          console.error('Ürün sayısı alınırken hata:', productsError);
+        if (!weeklyError && weeklySalesData) {
+          weeklyTransactions = weeklySalesData.length;
+          weeklySalesTotal = weeklySalesData.reduce((sum, item) => sum + (parseFloat(item.total_amount) || 0), 0);
+          console.log(`Haftalık satış: ${weeklySalesTotal} TL, ${weeklyTransactions} işlem`);
         }
         
-        // Son 7 günün satışlarını getir (grafik için)
-        try {
-          const last7Days = [];
-          const salesByDay = [];
+        // Aylık satışları getir
+        const { data: monthlySalesData, error: monthlyError } = await supabase
+          .from('sales')
+          .select('total_amount')
+          .eq('branch_id', selectedBranchId)
+          .gte('sale_time', startOfMonth.toISOString());
+        
+        if (!monthlyError && monthlySalesData) {
+          monthlyTransactions = monthlySalesData.length;
+          monthlySalesTotal = monthlySalesData.reduce((sum, item) => sum + (parseFloat(item.total_amount) || 0), 0);
+          console.log(`Aylık satış: ${monthlySalesTotal} TL, ${monthlyTransactions} işlem`);
+        }
+      } catch (dataError) {
+        console.error('Satış verileri çekilirken hata:', dataError);
+      }
+      
+      // Verileri state'e kaydet
+      setSalesData({
+        dailySales: dailySalesTotal,
+        weeklySales: weeklySalesTotal,
+        monthlySales: monthlySalesTotal,
+        totalProducts: 0, // Ürün sayısı ayrı olarak çekilecek
+        hourlyTransactions: hourlyTransactions,
+        hourlySalesAmount: hourlySalesTotal,
+        dailyTransactions: dailyTransactions,
+        weeklyTransactions: weeklyTransactions,
+        monthlyTransactions: monthlyTransactions
+      });
+      
+      // Toplam ürün sayısını getir
+      let totalProducts = 0;
+      try {
+        const { data: productsData, error: productsError } = await supabase
+          .from('products')
+          .select('id', { count: 'exact' });
           
-          // Son 7 günün tarihlerini oluştur
-          for (let i = 6; i >= 0; i--) {
-            const date = new Date();
-            date.setDate(date.getDate() - i);
-            date.setHours(0, 0, 0, 0);
-            
-            const day = date.getDate().toString().padStart(2, '0');
-            const month = (date.getMonth() + 1).toString().padStart(2, '0');
-            last7Days.push(`${day}/${month}`);
-            
-            // Her gün için başlangıç değeri 0
-            salesByDay.push(0);
-          }
+        if (!productsError) {
+          totalProducts = productsData.length;
+          // Ürün sayısını güncelle
+          setSalesData(prev => ({ ...prev, totalProducts }));
+        }
+      } catch (productsError) {
+        console.error('Ürün sayısı alınırken hata:', productsError);
+      }
+      
+      // Son 7 günün satışlarını getir (grafik için)
+      try {
+        const last7Days = [];
+        const salesByDay = [];
+        
+        // Son 7 günün tarihlerini oluştur
+        for (let i = 6; i >= 0; i--) {
+          const date = new Date();
+          date.setDate(date.getDate() - i);
+          date.setHours(0, 0, 0, 0);
           
-          // Son 7 günün satışlarını getir
-          const sevenDaysAgo = new Date();
-          sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-          sevenDaysAgo.setHours(0, 0, 0, 0);
+          const day = date.getDate().toString().padStart(2, '0');
+          const month = (date.getMonth() + 1).toString().padStart(2, '0');
+          last7Days.push(`${day}/${month}`);
           
-          const { data: last7DaysSales, error: salesError } = await supabase
-            .from('sales')
-            .select('sale_time, total_amount')
-            .eq('branch_id', selectedBranchId)
-            .gte('sale_time', sevenDaysAgo.toISOString())
-            .order('sale_time');
-          
-          if (!salesError && last7DaysSales) {
-            // Her satışı ilgili güne ekle
-            last7DaysSales.forEach(sale => {
-              const saleDate = new Date(sale.sale_time);
-              const day = saleDate.getDate();
-              const month = saleDate.getMonth() + 1;
-              const dateStr = `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}`;
-              
-              const dayIndex = last7Days.indexOf(dateStr);
-              if (dayIndex !== -1) {
-                salesByDay[dayIndex] += parseFloat(sale.total_amount);
-              }
-            });
-            
-            setSalesChartData({
-              labels: last7Days,
-              datasets: [
-                {
-                  data: salesByDay,
-                  color: (opacity = 1) => `rgba(0, 102, 255, ${opacity})`,
-                  strokeWidth: 2
-                }
-              ]
-            });
-          }
-        } catch (chartError) {
-          console.error('Grafik verileri hazırlanırken hata:', chartError);
+          // Her gün için başlangıç değeri 0
+          salesByDay.push(0);
         }
         
-        // En çok satılan ürünleri getir
-        try {
-          // Önce şubeye ait satışları al
-          const { data: branchSales, error: branchSalesError } = await supabase
-            .from('sales')
-            .select('id')
-            .eq('branch_id', selectedBranchId)
-            .gte('sale_time', startOfDay.toISOString());
+        // Son 7 günün satışlarını getir
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+        sevenDaysAgo.setHours(0, 0, 0, 0);
+        
+        const { data: last7DaysSales, error: salesError } = await supabase
+          .from('sales')
+          .select('sale_time, total_amount')
+          .eq('branch_id', selectedBranchId)
+          .gte('sale_time', sevenDaysAgo.toISOString())
+          .order('sale_time');
+        
+        if (!salesError && last7DaysSales) {
+          // Her satışı ilgili güne ekle
+          last7DaysSales.forEach(sale => {
+            const saleDate = new Date(sale.sale_time);
+            const day = saleDate.getDate();
+            const month = saleDate.getMonth() + 1;
+            const dateStr = `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}`;
             
-          if (!branchSalesError && branchSales && branchSales.length > 0) {
-            // Satış ID'lerini al
-            const saleIds = branchSales.map(sale => sale.id);
-            
-            // Bu satışlara ait ürünleri getir
-            const { data: topProductsData, error: topProductsError } = await supabase
-              .from('sale_items')
-              .select(`
-                id,
-                product_id,
-                quantity,
-                products:product_id (name)
-              `)
-              .in('sale_id', saleIds);
-              
-            if (!topProductsError && topProductsData && topProductsData.length > 0) {
-              // Ürünleri grupla ve sayılarını hesapla
-              const productCounts = {};
-              topProductsData.forEach(item => {
-                const productId = item.product_id;
-                const productName = item.products?.name || 'Bilinmeyen Ürün';
-                const quantity = item.quantity || 1;
-                
-                if (!productCounts[productId]) {
-                  productCounts[productId] = {
-                    id: productId,
-                    name: productName,
-                    count: 0
-                  };
-                }
-                
-                productCounts[productId].count += quantity;
-              });
-              
-              // En çok satılan 3 ürünü al
-              const topProducts = Object.values(productCounts)
-                .sort((a, b) => b.count - a.count)
-                .slice(0, 3);
-                
-              setTopProducts(topProducts);
-              console.log('En çok satılan ürünler:', topProducts);
-            } else {
-              setTopProducts([]);
+            const dayIndex = last7Days.indexOf(dateStr);
+            if (dayIndex !== -1) {
+              salesByDay[dayIndex] += parseFloat(sale.total_amount);
             }
+          });
+          
+          setSalesChartData({
+            labels: last7Days,
+            datasets: [
+              {
+                data: salesByDay,
+                color: (opacity = 1) => `rgba(0, 102, 255, ${opacity})`,
+                strokeWidth: 2
+              }
+            ]
+          });
+        }
+      } catch (chartError) {
+        console.error('Grafik verileri hazırlanırken hata:', chartError);
+      }
+      
+      // En çok satılan ürünleri getir
+      try {
+        // Önce şubeye ait satışları al
+        const { data: branchSales, error: branchSalesError } = await supabase
+          .from('sales')
+          .select('id')
+          .eq('branch_id', selectedBranchId)
+          .gte('sale_time', startOfDay.toISOString());
+          
+        if (!branchSalesError && branchSales && branchSales.length > 0) {
+          // Satış ID'lerini al
+          const saleIds = branchSales.map(sale => sale.id);
+          
+          // Bu satışlara ait ürünleri getir
+          const { data: topProductsData, error: topProductsError } = await supabase
+            .from('sale_items')
+            .select(`
+              id,
+              product_id,
+              quantity,
+              products:product_id (name)
+            `)
+            .in('sale_id', saleIds);
+            
+          if (!topProductsError && topProductsData && topProductsData.length > 0) {
+            // Ürünleri grupla ve sayılarını hesapla
+            const productCounts = {};
+            topProductsData.forEach(item => {
+              const productId = item.product_id;
+              const productName = item.products?.name || 'Bilinmeyen Ürün';
+              const quantity = item.quantity || 1;
+              
+              if (!productCounts[productId]) {
+                productCounts[productId] = {
+                  id: productId,
+                  name: productName,
+                  count: 0
+                };
+              }
+              
+              productCounts[productId].count += quantity;
+            });
+            
+            // En çok satılan 3 ürünü al
+            const topProducts = Object.values(productCounts)
+              .sort((a, b) => b.count - a.count)
+              .slice(0, 3);
+              
+            setTopProducts(topProducts);
+            console.log('En çok satılan ürünler:', topProducts);
           } else {
             setTopProducts([]);
           }
-        } catch (topProductsError) {
-          console.error('En çok satılan ürünler alınırken hata:', topProductsError);
+        } else {
           setTopProducts([]);
         }
-        
-        // Düşük stoklu ürünleri getir
-        try {
-          const { data: stockData, error: stockError } = await supabase
-            .from('branch_ingredient_stock')
-            .select(`
-              id,
-              branch_id,
-              ingredient_id,
-              stock_level,
-              low_stock_threshold,
-              ingredients:ingredient_id (name)
-            `)
-            .eq('branch_id', selectedBranchId)
-            .lt('stock_level', 10);
-            
-          if (stockError) throw stockError;
-          
-          if (stockData && stockData.length > 0) {
-            setLowStockItems(stockData);
-            console.log('Düşük stoklu malzemeler:', stockData.length);
-          } else {
-            setLowStockItems([]);
-            console.log('Düşük stoklu malzeme bulunamadı');
-          }
-        } catch (stockError) {
-          console.error('Stok verileri alınırken hata:', stockError);
-          setLowStockItems([]);
-        }
-        
-        setLoading(false);
-      } catch (error) {
-        console.error('Satış verileri yüklenirken hata:', error);
-        setLoading(false);
+      } catch (topProductsError) {
+        console.error('En çok satılan ürünler alınırken hata:', topProductsError);
+        setTopProducts([]);
       }
+      
+      // Düşük stoklu ürünleri getir
+      try {
+        const { data: stockData, error: stockError } = await supabase
+          .from('branch_ingredient_stock')
+          .select(`
+            id,
+            branch_id,
+            ingredient_id,
+            stock_level,
+            low_stock_threshold,
+            ingredients:ingredient_id (name)
+          `)
+          .eq('branch_id', selectedBranchId)
+          .lt('stock_level', 10);
+          
+        if (stockError) throw stockError;
+        
+        if (stockData && stockData.length > 0) {
+          setLowStockItems(stockData);
+          console.log('Düşük stoklu malzemeler:', stockData.length);
+        } else {
+          setLowStockItems([]);
+          console.log('Düşük stoklu malzeme bulunamadı');
+        }
+      } catch (stockError) {
+        console.error('Stok verileri alınırken hata:', stockError);
+        setLowStockItems([]);
+      }
+      
+      setLoading(false);
+      setRefreshing(false);
+    } catch (error) {
+      console.error('Satış verileri yüklenirken hata:', error);
+      setLoading(false);
+      setRefreshing(false);
     }
-    
-    fetchSalesData();
   }, [selectedBranchId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setLoading(true);
+      fetchDashboardData();
+      return () => {
+        // Optional: Cleanup if needed when screen loses focus
+        // console.log('Dashboard screen unfocused');
+      };
+    }, [fetchDashboardData])
+  );
+  
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    fetchDashboardData();
+  }, [fetchDashboardData]);
 
   // Şube değiştirme işlevi
   const handleBranchChange = (branchId, branchName) => {
@@ -465,17 +490,152 @@ export default function DashboardScreen({ navigation }) {
   };
 
   const renderDashboardContent = () => {
-    if (loading) {
+    if (loading && !refreshing) {
       return (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#1e3a8a" />
-          <Text style={styles.loadingText}>Veriler yükleniyor...</Text>
-        </View>
+        <ScrollView style={[styles.content, { paddingTop: 10 }]}>
+          <View style={styles.headerBanner}>
+            <Text style={styles.headerBannerTitle}>Yönetim Paneli</Text>
+            <Text style={styles.headerBannerSubtitle}>Şube: {selectedBranch}</Text>
+          </View>
+          
+          {/* Satış İstatistikleri */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Satış İstatistikleri</Text>
+            
+            <View style={styles.cardContainer}>
+              {/* <View style={[styles.detailCard, { backgroundColor: '#00BFFF' }]}>
+                <Ionicons name="time-outline" size={24} color="white" />
+                <Text style={styles.detailCardTitle}>Son 1 Saat Satışları</Text>
+                <Text style={styles.detailCardSubtitle}>{salesData.hourlyTransactions} Satış</Text>
+                <Text style={styles.detailCardValue}>{formatCurrency(salesData.hourlySalesAmount)}</Text>
+              </View> */}
+              
+              <View style={[styles.detailCard, { backgroundColor: '#00A86B' }]}>
+                <Ionicons name="today-outline" size={24} color="white" />
+                <Text style={styles.detailCardTitle}>Bugünkü Satışlar</Text>
+                <Text style={styles.detailCardSubtitle}>{salesData.dailyTransactions} Satış</Text>
+                <Text style={styles.detailCardValue}>{formatCurrency(salesData.dailySales)}</Text>
+              </View>
+              
+              <View style={[styles.detailCard, { backgroundColor: '#FF8C00' }]}>
+                <Ionicons name="calendar-outline" size={24} color="white" />
+                <Text style={styles.detailCardTitle}>Bu Haftalık Satışlar</Text>
+                <Text style={styles.detailCardSubtitle}>{salesData.weeklyTransactions} Satış</Text>
+                <Text style={styles.detailCardValue}>{formatCurrency(salesData.weeklySales)}</Text>
+              </View>
+              
+              <View style={[styles.detailCard, { backgroundColor: '#9370DB' }]}>
+                <Ionicons name="stats-chart-outline" size={24} color="white" />
+                <Text style={styles.detailCardTitle}>Bu Aylık Satışlar</Text>
+                <Text style={styles.detailCardSubtitle}>{salesData.monthlyTransactions} Satış</Text>
+                <Text style={styles.detailCardValue}>{formatCurrency(salesData.monthlySales)}</Text>
+              </View>
+            </View>
+          </View>
+          
+          {/* Şube Analizleri */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Şube Analizleri</Text>
+            
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsTitle}>Satış Trendi (Son 7 Gün)</Text>
+              {salesChartData.labels.length > 0 && (
+                <View style={styles.simpleChartContainer}>
+                  <View style={styles.chartLabels}>
+                    {salesChartData.labels.map((label, index) => (
+                      <Text key={index} style={styles.chartLabel}>{label}</Text>
+                    ))}
+                  </View>
+                  <View style={styles.chartBars}>
+                    {salesChartData.datasets[0].data.map((value, index) => {
+                      const maxValue = Math.max(...salesChartData.datasets[0].data);
+                      const height = maxValue > 0 ? (value / maxValue) * 150 : 0;
+                      return (
+                        <View key={index} style={styles.chartBarContainer}>
+                          <View style={[styles.chartBar, { height }]}>
+                            {height > 0 && (
+                              <Text style={styles.chartBarValue}>
+                                {value > 999 ? `${(value/1000).toFixed(1)}K` : value}
+                              </Text>
+                            )}
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
+            </View>
+            
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsTitle}>Bugünün En Çok Satılanları</Text>
+              {topProducts.length > 0 ? (
+                <>
+                  {topProducts.map((product, index) => (
+                    <View key={product.id} style={styles.popularItem}>
+                      <Text style={styles.itemRank}>{index + 1}.</Text>
+                      <Text style={styles.itemName}>{product.name}</Text>
+                      <Text style={styles.itemCount}>{product.count} adet</Text>
+                    </View>
+                  ))}
+                  
+                  {/* Çubuk grafik gösterimi */}
+                  <View style={styles.simpleBarChart}>
+                    {topProducts.map((product, index) => {
+                      const maxCount = Math.max(...topProducts.map(p => p.count));
+                      const barWidth = maxCount > 0 ? (product.count / maxCount) * 100 : 0;
+                      
+                      return (
+                        <View key={product.id} style={styles.barChartRow}>
+                          <Text style={styles.barChartLabel} numberOfLines={1} ellipsizeMode="tail">
+                            {product.name}
+                          </Text>
+                          <View style={styles.barChartBarContainer}>
+                            <View style={[styles.barChartBar, { width: `${barWidth}%` }]}>
+                              <Text style={styles.barChartBarValue}>{product.count}</Text>
+                            </View>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.noItems}>Bugün için satış verisi bulunmuyor.</Text>
+              )}
+            </View>
+            
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsTitle}>Düşük Stok Uyarısı</Text>
+              {lowStockItems.length > 0 ? (
+                lowStockItems.map((item) => (
+                  <View key={item.id} style={styles.popularItem}>
+                    <MaterialIcons name="warning" size={18} color="#f44336" />
+                    <Text style={styles.itemName}>{item.ingredients?.name || 'İsimsiz malzeme'}</Text>
+                    <Text style={styles.itemCount}>{item.stock_level} adet kaldı</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.noItems}>Düşük stoklu ürün bulunmamaktadır.</Text>
+              )}
+            </View>
+          </View>
+        </ScrollView>
       );
     }
     
     return (
-      <ScrollView style={[styles.content, { paddingTop: 10 }]}>
+      <ScrollView 
+        style={[styles.content, { paddingTop: 10 }]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#1e3a8a"]}
+            tintColor="#1e3a8a"
+          />
+        }
+      >
         <View style={styles.headerBanner}>
           <Text style={styles.headerBannerTitle}>Yönetim Paneli</Text>
           <Text style={styles.headerBannerSubtitle}>Şube: {selectedBranch}</Text>
@@ -486,15 +646,15 @@ export default function DashboardScreen({ navigation }) {
           <Text style={styles.sectionTitle}>Satış İstatistikleri</Text>
           
           <View style={styles.cardContainer}>
-            <View style={[styles.detailCard, { backgroundColor: '#00BFFF' }]}>
+            {/* <View style={[styles.detailCard, { backgroundColor: '#00BFFF' }]}>
               <Ionicons name="time-outline" size={24} color="white" />
               <Text style={styles.detailCardTitle}>Son 1 Saat Satışları</Text>
               <Text style={styles.detailCardSubtitle}>{salesData.hourlyTransactions} Satış</Text>
-              <Text style={styles.detailCardValue}>{formatCurrency(salesData.dailySales / 24)}</Text>
-            </View>
+              <Text style={styles.detailCardValue}>{formatCurrency(salesData.hourlySalesAmount)}</Text>
+            </View> */}
             
             <View style={[styles.detailCard, { backgroundColor: '#00A86B' }]}>
-              <Ionicons name="calendar-outline" size={24} color="white" />
+              <Ionicons name="today-outline" size={24} color="white" />
               <Text style={styles.detailCardTitle}>Bugünkü Satışlar</Text>
               <Text style={styles.detailCardSubtitle}>{salesData.dailyTransactions} Satış</Text>
               <Text style={styles.detailCardValue}>{formatCurrency(salesData.dailySales)}</Text>
@@ -508,7 +668,7 @@ export default function DashboardScreen({ navigation }) {
             </View>
             
             <View style={[styles.detailCard, { backgroundColor: '#9370DB' }]}>
-              <Ionicons name="calendar-outline" size={24} color="white" />
+              <Ionicons name="stats-chart-outline" size={24} color="white" />
               <Text style={styles.detailCardTitle}>Bu Aylık Satışlar</Text>
               <Text style={styles.detailCardSubtitle}>{salesData.monthlyTransactions} Satış</Text>
               <Text style={styles.detailCardValue}>{formatCurrency(salesData.monthlySales)}</Text>
@@ -651,7 +811,7 @@ export default function DashboardScreen({ navigation }) {
       case 'users':
         return (
           <View style={{ flex: 1 }}>
-            <UsersScreen />
+            <UsersScreen activeBranchId={selectedBranchId} />
           </View>
         );
       case 'payments':
@@ -689,6 +849,7 @@ export default function DashboardScreen({ navigation }) {
             source={PLACEHOLDER_LOGO}
             style={styles.logo}
           />
+          <MaterialCommunityIcons name="coffee-outline" size={24} color="#333" style={{ marginLeft: 10 }} />
           <Text style={styles.headerTitle}>Old Town Coffee</Text>
         </View>
         <View style={styles.headerRight}>
@@ -1160,7 +1321,7 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   detailCard: {
-    width: isMobile ? '48%' : '24%',
+    width: isMobile ? '100%' : '32%',
     padding: 15,
     borderRadius: 8,
     marginBottom: 10,

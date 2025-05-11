@@ -18,7 +18,7 @@ import {
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { supabase } from '../supabaseClient';
 
-const UsersScreen = () => {
+const UsersScreen = ({ activeBranchId }) => {
   // State tanımlamaları
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -37,12 +37,10 @@ const UsersScreen = () => {
   // Form state
   const [formData, setFormData] = useState({
     id: null,
+    full_name: '',
     email: '',
-    first_name: '',
-    last_name: '',
-    phone: '',
-    role: 'user',
-    is_active: true,
+    role_id: 2,
+    assigned_branch_id: '',
   });
   
   const [passwordData, setPasswordData] = useState({
@@ -52,47 +50,61 @@ const UsersScreen = () => {
 
   const flatListRef = useRef(null);
 
+  const [branches, setBranches] = useState([]);
+
   // Kullanıcıları getir
   const fetchUsers = async () => {
+    if (!activeBranchId) { // If no active branch, show no users and clear counts
+      setUsers([]);
+      setTotalCount(0);
+      setTotalPages(0);
+      setLoading(false);
+      setRefreshing(false);
+      // Optionally, you could set a message here to inform the user to select a branch.
+      // For now, it will just show the "Henüz kullanıcı eklenmemiş" or similar message.
+      return;
+    }
+
     try {
       setLoading(true);
       
-      // Toplam kullanıcı sayısını almak için sorgu
-      const { count, error: countError } = await supabase
+      let countQuery = supabase
         .from('profiles')
-        .select('*', { count: 'exact', head: true });
+        .select('id', { count: 'exact', head: true })
+        .eq('assigned_branch_id', activeBranchId); // Filter by active branch
+
+      if (searchQuery) { // Apply search to count if needed (consistency)
+        countQuery = countQuery.or(`full_name.ilike.%${searchQuery}%`);
+      }
+
+      const { count, error: countError } = await countQuery;
         
       if (countError) throw countError;
+      setTotalCount(count || 0);
+      setTotalPages(Math.ceil((count || 0) / pageSize));
       
-      // Toplam sayfa sayısını hesapla
-      setTotalCount(count);
-      setTotalPages(Math.ceil(count / pageSize));
-      
-      // Kullanıcıları getir
       let query = supabase
         .from('profiles')
-        .select('*');
+        .select('id, full_name, role_id, assigned_branch_id, created_at, updated_at') // Removed is_active
+        .eq('assigned_branch_id', activeBranchId); // Filter by active branch
         
-      // Arama filtresi
       if (searchQuery) {
-        query = query.or(`email.ilike.%${searchQuery}%,first_name.ilike.%${searchQuery}%,last_name.ilike.%${searchQuery}%`);
+        query = query.or(`full_name.ilike.%${searchQuery}%`);
       }
       
-      // Sayfalama
       const from = currentPage * pageSize;
       const to = from + pageSize - 1;
-      
       const { data, error } = await query
         .range(from, to)
         .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      
-      console.log(`${data.length} kullanıcı yüklendi.`);
+
+      if (error) { // Log the specific Supabase error
+        console.error('Supabase error fetching users:', error);
+        throw error; // Re-throw to be caught by the generic catch block
+      }
       setUsers(data || []);
-      
     } catch (error) {
-      console.error('Kullanıcı verisi çekilirken hata:', error);
+      // The console.error from the specific Supabase error above will provide more detail
       Alert.alert('Hata', 'Kullanıcılar yüklenirken bir sorun oluştu.');
     } finally {
       setLoading(false);
@@ -103,7 +115,7 @@ const UsersScreen = () => {
   // Sayfa değiştiğinde veya filtre uygulandığında kullanıcıları tekrar getir
   useEffect(() => {
     fetchUsers();
-  }, [currentPage, pageSize, searchQuery]);
+  }, [currentPage, pageSize, searchQuery, activeBranchId]); // Added activeBranchId to dependencies
 
   // Sayfayı yenile
   const onRefresh = () => {
@@ -115,12 +127,10 @@ const UsersScreen = () => {
   const resetForm = () => {
     setFormData({
       id: null,
+      full_name: '',
       email: '',
-      first_name: '',
-      last_name: '',
-      phone: '',
-      role: 'user',
-      is_active: true,
+      role_id: 2, // Default role, ensure this ID exists in your roles table
+      assigned_branch_id: activeBranchId || '', // Default to active branch
     });
     
     setPasswordData({
@@ -133,13 +143,12 @@ const UsersScreen = () => {
   const startEdit = (item) => {
     setFormData({
       id: item.id,
-      email: item.email || '',
-      first_name: item.first_name || '',
-      last_name: item.last_name || '',
-      phone: item.phone || '',
-      role: item.role || 'user',
-      is_active: item.is_active !== false,
+      full_name: item.full_name || '',
+      email: item.email || '', // Populate email for edit mode (display only)
+      role_id: item.role_id || 2,
+      assigned_branch_id: item.assigned_branch_id || activeBranchId || '',
     });
+    setPasswordData({ password: '', confirmPassword: '' }); // Clear password fields for edit mode
     setFormMode('edit');
     setModalVisible(true);
   };
@@ -147,19 +156,20 @@ const UsersScreen = () => {
   // Kullanıcı ekle veya güncelle
   const handleSaveUser = async () => {
     // Form doğrulama
-    if (!formData.email.trim()) {
-      Alert.alert('Hata', 'E-posta adresi boş olamaz.');
-      return;
-    }
-    
-    if (!formData.email.includes('@')) {
-      Alert.alert('Hata', 'Geçerli bir e-posta adresi giriniz.');
+    if (!formData.full_name || !formData.full_name.trim()) {
+      Alert.alert('Hata', 'Ad Soyad alanı boş olamaz.');
       return;
     }
 
-    if (!formData.first_name.trim() || !formData.last_name.trim()) {
-      Alert.alert('Hata', 'Ad ve soyad alanları boş olamaz.');
-      return;
+    if (!formData.email || !formData.email.trim()) {
+        Alert.alert('Hata', 'Email alanı boş olamaz.');
+        return;
+    }
+    // Basic email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(formData.email.trim())) {
+        Alert.alert('Hata', 'Geçerli bir email adresi girin.');
+        return;
     }
 
     // Yeni kullanıcı oluşturulurken şifre kontrolü
@@ -186,12 +196,13 @@ const UsersScreen = () => {
       if (formMode === 'add') {
         // Önce auth tablosuna kullanıcı ekle
         const { data: authData, error: authError } = await supabase.auth.signUp({
-          email: formData.email,
+          email: formData.email.trim(), // Use trimmed email
           password: passwordData.password,
           options: {
             data: {
-              first_name: formData.first_name,
-              last_name: formData.last_name,
+              // full_name can be stored in user_metadata if desired
+              // but profiles table is the main source for other app data
+              // For now, we'll rely on the profiles table update below for full_name
             }
           }
         });
@@ -199,37 +210,85 @@ const UsersScreen = () => {
         if (authError) throw authError;
         
         if (!authData.user) {
-          throw new Error('Kullanıcı oluşturulamadı.');
+          throw new Error('Kullanıcı oluşturulamadı (auth).');
+        }
+        
+        // Mevcut profili kontrol et
+        const { data: existingProfile, error: fetchProfileError } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('id', authData.user.id)
+          .maybeSingle();
+
+        if (fetchProfileError && fetchProfileError.code !== 'PGRST116') { // PGRST116: no rows found
+          // Mevcut profil kontrol edilirken bir hata oluştu, auth kullanıcısını silmeyi dene
+          console.error("Mevcut profil kontrol edilirken hata:", fetchProfileError);
+          try {
+            await supabase.functions.invoke('delete-auth-user-on-error', { body: { userId: authData.user.id } });
+          } catch (e) { /* ignore cleanup error */ }
+          throw new Error(`Mevcut profil kontrol edilirken hata: ${fetchProfileError.message}`);
+        }
+
+        if (existingProfile) {
+          // Profil zaten mevcut, bu bir çakışma. Auth kullanıcısını silmeyi dene.
+          console.warn(`Profil ID ${authData.user.id} için zaten mevcut. Auth kullanıcısı silinecek.`);
+          try {
+            await supabase.functions.invoke('delete-auth-user-on-error', { body: { userId: authData.user.id } });
+          } catch (e) { /* ignore cleanup error */ }
+          throw new Error('Profil zaten mevcut. Lütfen farklı bir email ile tekrar deneyin veya sistem yöneticisi ile iletişime geçin.');
         }
         
         // Profil bilgilerini kaydet
+        const profileInsertData = {
+          id: authData.user.id, // Ensure id is explicitly set
+          full_name: formData.full_name.trim(),
+          // email: formData.email.trim(), // Removed: Email will not be stored in profiles table directly
+          role_id: formData.role_id,
+          assigned_branch_id: formData.assigned_branch_id || null, // Ensure null if empty
+          updated_at: new Date().toISOString(),
+          // created_at will be set by default by Supabase
+        };
+
         const { error: profileError } = await supabase
           .from('profiles')
-          .update({
-            first_name: formData.first_name.trim(),
-            last_name: formData.last_name.trim(),
-            phone: formData.phone.trim(),
-            role: formData.role,
-            is_active: formData.is_active,
-            updated_at: new Date()
-          })
-          .eq('id', authData.user.id);
+          .insert(profileInsertData); // Use insert for new profile
           
-        if (profileError) throw profileError;
+        if (profileError) {
+            // If profile creation fails, attempt to delete the auth user to prevent orphaned auth users
+            console.error("Error creating profile, attempting to delete auth user via Edge Function:", profileError);
+            try {
+              const { data: funcData, error: funcError } = await supabase.functions.invoke('delete-auth-user-on-error', {
+                body: { userId: authData.user.id }
+              });
+              if (funcError) {
+                console.error('Edge Function error while deleting auth user:', funcError.message);
+                // Even if function fails, proceed to throw original profile error but note that cleanup might be incomplete
+                throw new Error(`Profil oluşturulamadı: ${profileError.message}. Auth kullanıcısını silme denemesi başarısız oldu (fonksiyon hatası: ${funcError.message}).`);
+              } else {
+                console.log('Auth user deletion requested via Edge Function:', funcData);
+                throw new Error(`Profil oluşturulamadı: ${profileError.message}. Auth kullanıcısı silindi (fonksiyon aracılığıyla).`);
+              }
+            } catch (invokeError) {
+                console.error('Error invoking Edge Function for auth user deletion:', invokeError.message);
+                throw new Error(`Profil oluşturulamadı: ${profileError.message}. Auth kullanıcısını silme denemesi başarısız oldu (çağrı hatası: ${invokeError.message}).`);
+            }
+        }
         
         Alert.alert('Başarılı', 'Kullanıcı başarıyla eklendi.');
-      } else {
-        // Mevcut kullanıcıyı güncelle
+      } else { // Edit mode
+        // Mevcut kullanıcıyı güncelle (profiles table only)
+        // Password changes are not handled here. Email is not editable in form.
+        const profileUpdateData = {
+            full_name: formData.full_name.trim(),
+            // email: formData.email.trim(), // Email is not editable in form for now
+            role_id: formData.role_id,
+            assigned_branch_id: formData.assigned_branch_id || null, // Ensure null if empty
+            updated_at: new Date().toISOString(),
+        };
+
         const { error } = await supabase
           .from('profiles')
-          .update({
-            first_name: formData.first_name.trim(),
-            last_name: formData.last_name.trim(),
-            phone: formData.phone.trim(),
-            role: formData.role,
-            is_active: formData.is_active,
-            updated_at: new Date()
-          })
+          .update(profileUpdateData)
           .eq('id', formData.id);
           
         if (error) throw error;
@@ -249,39 +308,15 @@ const UsersScreen = () => {
     }
   };
 
-  // Kullanıcı durumunu değiştir (aktif/pasif)
-  const toggleUserStatus = async (user) => {
-    try {
-      setLoading(true);
-      
-      const newStatus = !user.is_active;
-      
-      const { error } = await supabase
-        .from('profiles')
-        .update({ 
-          is_active: newStatus,
-          updated_at: new Date()
-        })
-        .eq('id', user.id);
-        
-      if (error) throw error;
-      
-      // Listeyi güncelle
-      setUsers(users.map(item => 
-        item.id === user.id ? {...item, is_active: newStatus} : item
-      ));
-      
-      Alert.alert(
-        'Başarılı', 
-        `Kullanıcı durumu ${newStatus ? 'aktif' : 'pasif'} olarak güncellendi.`
-      );
-      
-    } catch (error) {
-      console.error('Kullanıcı durumu güncellenirken hata:', error);
-      Alert.alert('Hata', 'Kullanıcı durumu güncellenirken bir sorun oluştu.');
-    } finally {
-      setLoading(false);
-    }
+  // Placeholder for deleting a user
+  const handleDeleteUser = (item) => {
+    Alert.alert(
+      'Kullanıcı Sil',
+      `"${item.full_name}" adlı kullanıcıyı silme işlemi henüz tanımlanmadı.`,
+      [{ text: 'Tamam' }]
+    );
+    // We can implement actual deletion logic here later, 
+    // similar to handleDeleteBranch with confirmation.
   };
 
   // Sayfalama fonksiyonları
@@ -306,27 +341,14 @@ const UsersScreen = () => {
   const renderUserItem = ({ item }) => (
     <View style={styles.tableRow}>
       <View style={[styles.tableCell, { flex: 1.5 }]}>
-        <Text style={styles.cellText}>{item.email}</Text>
+        <Text style={styles.cellText}>{item.full_name}</Text>
       </View>
-      <View style={styles.tableCell}>
-        <Text style={styles.cellText}>{item.first_name} {item.last_name}</Text>
-      </View>
-      <View style={styles.tableCell}>
-        <Text style={styles.cellText}>
-          {item.role === 'admin' ? 'Yönetici' : item.role === 'manager' ? 'Müdür' : 'Kullanıcı'}
-        </Text>
-      </View>
-      <View style={styles.tableCell}>
-        <View style={[
-          styles.statusBadge, 
-          { backgroundColor: item.is_active ? '#4caf50' : '#f44336' }
-        ]}>
-          <Text style={styles.statusText}>
-            {item.is_active ? 'Aktif' : 'Pasif'}
-          </Text>
+      <View style={[styles.tableCell, { flex: 0.8 }]}>
+        <View style={[styles.roleBadge, { backgroundColor: getRoleColor(item.role_id) }]}>
+          <Text style={styles.roleBadgeText}>{getRoleLabel(item.role_id)}</Text>
         </View>
       </View>
-      <View style={[styles.tableCell, { flex: 0.8, justifyContent: 'center' }]}>
+      <View style={[styles.tableCell, { flex: 1, justifyContent: 'center' }]}>
         <View style={styles.actionButtons}>
           <TouchableOpacity
             style={[styles.actionButton, styles.editButton]}
@@ -334,12 +356,11 @@ const UsersScreen = () => {
           >
             <MaterialIcons name="edit" size={20} color="#fff" />
           </TouchableOpacity>
-          
           <TouchableOpacity
-            style={[styles.actionButton, item.is_active ? styles.deactivateButton : styles.activateButton]}
-            onPress={() => toggleUserStatus(item)}
+            style={[styles.actionButton, styles.deactivateButton]}
+            onPress={() => handleDeleteUser(item)}
           >
-            <MaterialIcons name={item.is_active ? "block" : "check-circle"} size={20} color="#fff" />
+            <MaterialIcons name="delete" size={20} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
@@ -350,22 +371,39 @@ const UsersScreen = () => {
   const renderTableHeader = () => (
     <View style={styles.tableHeader}>
       <View style={[styles.tableHeaderCell, { flex: 1.5 }]}>
-        <Text style={styles.tableHeaderText}>E-posta</Text>
-      </View>
-      <View style={styles.tableHeaderCell}>
         <Text style={styles.tableHeaderText}>Ad Soyad</Text>
       </View>
-      <View style={styles.tableHeaderCell}>
-        <Text style={styles.tableHeaderText}>Yetki</Text>
-      </View>
-      <View style={styles.tableHeaderCell}>
-        <Text style={styles.tableHeaderText}>Durum</Text>
-      </View>
       <View style={[styles.tableHeaderCell, { flex: 0.8 }]}>
+        <Text style={styles.tableHeaderText}>Rol</Text>
+      </View>
+      <View style={[styles.tableHeaderCell, { flex: 1 }]}>
         <Text style={styles.tableHeaderText}>İşlemler</Text>
       </View>
     </View>
   );
+
+  // Rol etiketi
+  function getRoleLabel(role_id) {
+    if (role_id === 1) return 'Yönetici';
+    if (role_id === 2) return 'Kasiyer';
+    if (role_id === 3) return 'Şube Müdürü';
+    return 'Kullanıcı';
+  }
+  function getRoleColor(role_id) {
+    if (role_id === 1) return '#3b5bdb'; // Yönetici - koyu mavi
+    if (role_id === 2) return '#00b8d9'; // Kasiyer - koyu turkuaz
+    if (role_id === 3) return '#43a047'; // Şube Müdürü - koyu yeşil
+    return '#757575'; // Kullanıcı - koyu gri
+  }
+  // Şube etiketi
+  function getBranchLabel(branchId) {
+    if (!branchId) return 'Tüm Şubeler';
+    const branch = branches.find(b => b.id === branchId);
+    return branch ? branch.name : branchId;
+  }
+  function getBranchColor() {
+    return '#00897b'; // Koyu yeşil-mavi
+  }
 
   // Sayfalama kontrollerini render et
   const renderPaginationControls = () => (
@@ -430,6 +468,16 @@ const UsersScreen = () => {
       </View>
     </View>
   );
+
+  useEffect(() => {
+    async function fetchBranches() {
+      const { data, error } = await supabase
+        .from('branches')
+        .select('id, name');
+      if (!error) setBranches(data || []);
+    }
+    fetchBranches();
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -525,7 +573,7 @@ const UsersScreen = () => {
           </View>
           
           {/* Sayfalama Kontrolleri */}
-          {users.length > 0 && renderPaginationControls()}
+          {totalPages > 1 && renderPaginationControls()}
         </>
       )}
 
@@ -550,17 +598,29 @@ const UsersScreen = () => {
             
             <ScrollView style={styles.formContainer}>
               <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>E-posta</Text>
+                <Text style={styles.formLabel}>Ad Soyad</Text>
                 <TextInput
-                  style={[styles.formInput, formMode === 'edit' && styles.disabledInput]}
-                  value={formData.email}
-                  onChangeText={(text) => setFormData({...formData, email: text})}
-                  placeholder="E-posta adresini girin"
-                  keyboardType="email-address"
-                  editable={formMode !== 'edit'} // Düzenleme modunda e-posta değiştirilemez
+                  style={styles.formInput}
+                  value={formData.full_name}
+                  onChangeText={(text) => setFormData({ ...formData, full_name: text })}
+                  placeholder="Ad Soyad"
                 />
               </View>
-              
+
+              {/* Email Input */} 
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Email</Text>
+                <TextInput
+                  style={styles.formInput}
+                  value={formData.email}
+                  onChangeText={(text) => setFormData({ ...formData, email: text.toLowerCase() })}
+                  placeholder="Email adresi"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  editable={formMode === 'add'} // Email only editable on add mode
+                />
+              </View>
+
               {formMode === 'add' && (
                 <>
                   <View style={styles.formGroup}>
@@ -568,18 +628,17 @@ const UsersScreen = () => {
                     <TextInput
                       style={styles.formInput}
                       value={passwordData.password}
-                      onChangeText={(text) => setPasswordData({...passwordData, password: text})}
-                      placeholder="Şifre girin"
+                      onChangeText={(text) => setPasswordData({ ...passwordData, password: text })}
+                      placeholder="Şifre (en az 6 karakter)"
                       secureTextEntry
                     />
                   </View>
-                  
                   <View style={styles.formGroup}>
                     <Text style={styles.formLabel}>Şifre Tekrar</Text>
                     <TextInput
                       style={styles.formInput}
                       value={passwordData.confirmPassword}
-                      onChangeText={(text) => setPasswordData({...passwordData, confirmPassword: text})}
+                      onChangeText={(text) => setPasswordData({ ...passwordData, confirmPassword: text })}
                       placeholder="Şifreyi tekrar girin"
                       secureTextEntry
                     />
@@ -588,93 +647,44 @@ const UsersScreen = () => {
               )}
               
               <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Ad</Text>
-                <TextInput
-                  style={styles.formInput}
-                  value={formData.first_name}
-                  onChangeText={(text) => setFormData({...formData, first_name: text})}
-                  placeholder="Adını girin"
-                />
-              </View>
-              
-              <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Soyad</Text>
-                <TextInput
-                  style={styles.formInput}
-                  value={formData.last_name}
-                  onChangeText={(text) => setFormData({...formData, last_name: text})}
-                  placeholder="Soyadını girin"
-                />
-              </View>
-              
-              <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Telefon</Text>
-                <TextInput
-                  style={styles.formInput}
-                  value={formData.phone}
-                  onChangeText={(text) => setFormData({...formData, phone: text})}
-                  placeholder="Telefon numarasını girin"
-                  keyboardType="phone-pad"
-                />
-              </View>
-              
-              <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Yetki</Text>
+                <Text style={styles.formLabel}>Rol</Text>
                 <View style={styles.radioGroup}>
                   <TouchableOpacity 
-                    style={[
-                      styles.radioButton, 
-                      formData.role === 'user' && styles.radioButtonSelected
-                    ]}
-                    onPress={() => setFormData({...formData, role: 'user'})}
+                    style={[styles.radioButton, formData.role_id === 1 && styles.radioButtonSelected]}
+                    onPress={() => setFormData({ ...formData, role_id: 1 })}
                   >
-                    <View style={[
-                      styles.radioCircle, 
-                      formData.role === 'user' && styles.radioCircleSelected
-                    ]} />
-                    <Text style={styles.radioLabel}>Kullanıcı</Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={[
-                      styles.radioButton, 
-                      formData.role === 'manager' && styles.radioButtonSelected
-                    ]}
-                    onPress={() => setFormData({...formData, role: 'manager'})}
-                  >
-                    <View style={[
-                      styles.radioCircle, 
-                      formData.role === 'manager' && styles.radioCircleSelected
-                    ]} />
-                    <Text style={styles.radioLabel}>Müdür</Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={[
-                      styles.radioButton, 
-                      formData.role === 'admin' && styles.radioButtonSelected
-                    ]}
-                    onPress={() => setFormData({...formData, role: 'admin'})}
-                  >
-                    <View style={[
-                      styles.radioCircle, 
-                      formData.role === 'admin' && styles.radioCircleSelected
-                    ]} />
+                    <View style={[styles.radioCircle, formData.role_id === 1 && styles.radioCircleSelected]} />
                     <Text style={styles.radioLabel}>Yönetici</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.radioButton, formData.role_id === 2 && styles.radioButtonSelected]}
+                    onPress={() => setFormData({ ...formData, role_id: 2 })}
+                  >
+                    <View style={[styles.radioCircle, formData.role_id === 2 && styles.radioCircleSelected]} />
+                    <Text style={styles.radioLabel}>Kasiyer</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.radioButton, formData.role_id === 3 && styles.radioButtonSelected]}
+                    onPress={() => setFormData({ ...formData, role_id: 3 })}
+                  >
+                    <View style={[styles.radioCircle, formData.role_id === 3 && styles.radioCircleSelected]} />
+                    <Text style={styles.radioLabel}>Şube Müdürü</Text>
                   </TouchableOpacity>
                 </View>
               </View>
-              
               <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Durum</Text>
-                <View style={styles.switchContainer}>
-                  <Text style={styles.switchLabel}>{formData.is_active ? 'Aktif' : 'Pasif'}</Text>
-                  <Switch
-                    value={formData.is_active}
-                    onValueChange={(value) => setFormData({...formData, is_active: value})}
-                    trackColor={{ false: "#767577", true: "#1e3a8a" }}
-                    thumbColor={formData.is_active ? "#fff" : "#f4f3f4"}
-                  />
+                <Text style={styles.formLabel}>Şube</Text>
+                <View style={styles.radioGroup}>
+                  {branches.map(branch => (
+                    <TouchableOpacity
+                      key={branch.id}
+                      style={[styles.radioButton, formData.assigned_branch_id === branch.id && styles.radioButtonSelected]}
+                      onPress={() => setFormData({ ...formData, assigned_branch_id: branch.id })}
+                    >
+                      <View style={[styles.radioCircle, formData.assigned_branch_id === branch.id && styles.radioCircleSelected]} />
+                      <Text style={styles.radioLabel}>{branch.name}</Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
               </View>
             </ScrollView>
@@ -988,17 +998,18 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#1e3a8a',
-    paddingVertical: 10,
-    paddingHorizontal: 15,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
     borderRadius: 5,
-    margin: 10,
+    margin: 5,
+    marginTop: 10,
   },
   paginationInfo: {
-    flex: 1,
+    flex: 0.8,
   },
   paginationText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 12,
   },
   pageControls: {
     flexDirection: 'row',
@@ -1007,37 +1018,38 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   pageButton: {
-    width: 40,
-    height: 40,
+    width: 32,
+    height: 32,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 20,
+    borderRadius: 16,
   },
   disabledButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
   },
   pageIndicator: {
-    paddingHorizontal: 15,
+    paddingHorizontal: 10,
   },
   pageIndicatorText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 12,
   },
   pageSizeSelector: {
     flexDirection: 'row',
     alignItems: 'center',
-    flex: 1,
+    flex: 1.2,
     justifyContent: 'flex-end',
   },
   pageSizeLabel: {
     color: '#fff',
-    marginRight: 10,
+    marginRight: 5,
+    fontSize: 12,
   },
   pageSizeButton: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    marginLeft: 5,
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    marginLeft: 3,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     borderRadius: 3,
   },
@@ -1046,9 +1058,32 @@ const styles = StyleSheet.create({
   },
   pageSizeButtonText: {
     color: '#fff',
+    fontSize: 12,
   },
   activePageSizeButtonText: {
     color: '#1e3a8a',
+    fontWeight: 'bold',
+  },
+  roleBadge: {
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  roleBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  branchBadge: {
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  branchBadgeText: {
+    color: '#fff',
+    fontSize: 12,
     fontWeight: 'bold',
   },
 });

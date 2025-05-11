@@ -1,4 +1,4 @@
-package com.anonymous.cafeapp2
+package com.umutdalga.smartcafe
 
 import android.os.Build
 import android.os.Bundle
