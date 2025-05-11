@@ -21,6 +21,9 @@ buildscript {
   }
 }
 
+apply plugin: "expo-root-project"
+apply plugin: "com.facebook.react.rootproject"
+
 def reactNativeAndroidDir = new File(
   providers.exec {
     workingDir(rootDir)
@@ -41,6 +44,3 @@ allprojects {
     maven { url 'https://www.jitpack.io' }
   }
 }
-
-apply plugin: "expo-root-project"
-apply plugin: "com.facebook.react.rootproject"
