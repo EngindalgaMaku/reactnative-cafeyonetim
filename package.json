@@ -43,6 +43,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",
+    "@types/expo": "^33.0.3",
     "babel-plugin-module-resolver": "^5.0.2"
   },
   "private": true
