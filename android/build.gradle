@@ -6,19 +6,16 @@ ext {
   compileSdkVersion = 34
   targetSdkVersion = 34
   ndkVersion = "25.2.9519653"
-  kotlinVersion = "1.8.20" // Or a version compatible with AGP 8.2.2
+  kotlinVersion = "1.8.20"
 }
 
 buildscript {
-  ext {
-    kotlinVersion = "1.8.20" // Define kotlinVersion for buildscript scope
-  }
   repositories {
     google()
     mavenCentral()
   }
   dependencies {
-    classpath("com.android.tools.build:gradle:8.2.2") // Downgraded AGP
+    classpath("com.android.tools.build:gradle:8.2.2")
     classpath("com.facebook.react:react-native-gradle-plugin")
     classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
   }
