@@ -47,3 +47,7 @@ yarn-error.*
 
 # Gradle
 .gradle/
+
+# CNG / Prebuild: Ignore native folders if using app.json as source of truth
+/android
+/ios
